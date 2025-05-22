@@ -87,6 +87,11 @@ resource "aws_instance" "app_server" {
     host        = self.public_ip
   }
 }
+
+
+'''
+
+
 ## ⚠️ Important Caveats: When NOT to Use Provisioners
 
 Provisioners are like **duct tape** — handy in a pinch, but not meant for long-term structural work.
