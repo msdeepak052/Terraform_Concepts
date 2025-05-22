@@ -49,49 +49,6 @@ You use Terraform to spin up the EC2 instance. Once the instance is up, you need
 - Install NGINX (`remote-exec`)
 - Print the IP locally (`local-exec`)
 
-### 📦 Terraform Example
-
-```hcl
-resource "aws_instance" "app_server" {
-  ami           = "ami-0c55b159cbfafe1f0"
-  instance_type = "t2.micro"
-  key_name      = "my-key"
-
-  provisioner "file" {
-    source      = "my_app_binary"
-    destination = "/home/ubuntu/my_app_binary"
-  }
-
-  provisioner "file" {
-    source      = "config.json"
-    destination = "/home/ubuntu/config.json"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "sudo apt update",
-      "sudo apt install -y nginx",
-      "chmod +x /home/ubuntu/my_app_binary",
-      "/home/ubuntu/my_app_binary --config /home/ubuntu/config.json &"
-    ]
-  }
-
-  provisioner "local-exec" {
-    command = "echo ${self.public_ip} > latest_server_ip.txt"
-  }
-
-  connection {
-    type        = "ssh"
-    user        = "ubuntu"
-    private_key = file("~/.ssh/my-key.pem")
-    host        = self.public_ip
-  }
-}
-
-
-'''
-
-
 ## ⚠️ Important Caveats: When NOT to Use Provisioners
 
 Provisioners are like **duct tape** — handy in a pinch, but not meant for long-term structural work.
@@ -155,3 +112,48 @@ provisioner "remote-exec" {
 | `local-exec`    | Run local shell commands on the Terraform host  |
 | **Best Practice** | Use for quick bootstrapping only             |
 | **Better Tools** | `cloud-init`, Ansible, Packer, pre-baked AMIs |
+
+
+### 📦 Terraform Example
+
+```hcl
+resource "aws_instance" "app_server" {
+  ami           = "ami-0c55b159cbfafe1f0"
+  instance_type = "t2.micro"
+  key_name      = "my-key"
+
+  provisioner "file" {
+    source      = "my_app_binary"
+    destination = "/home/ubuntu/my_app_binary"
+  }
+
+  provisioner "file" {
+    source      = "config.json"
+    destination = "/home/ubuntu/config.json"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo apt update",
+      "sudo apt install -y nginx",
+      "chmod +x /home/ubuntu/my_app_binary",
+      "/home/ubuntu/my_app_binary --config /home/ubuntu/config.json &"
+    ]
+  }
+
+  provisioner "local-exec" {
+    command = "echo ${self.public_ip} > latest_server_ip.txt"
+  }
+
+  connection {
+    type        = "ssh"
+    user        = "ubuntu"
+    private_key = file("~/.ssh/my-key.pem")
+    host        = self.public_ip
+  }
+}
+
+
+'''
+
+
