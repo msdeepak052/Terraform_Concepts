@@ -102,7 +102,7 @@ provisioner "remote-exec" {
 - ❌ This makes them **unsuitable for configuration drift management**.
 - ✅ Instead, use tools like **Ansible** or **Puppet** for better control and idempotency.
 
-
+---
 
 ### 🔬 Summary
 
@@ -114,8 +114,10 @@ provisioner "remote-exec" {
 | **Best Practice** | Use for quick bootstrapping only             |
 | **Better Tools** | `cloud-init`, Ansible, Packer, pre-baked AMIs |
 
+---
 
 ### 📦 Terraform Example
+---
 
 ```hcl
 resource "aws_instance" "app_server" {
