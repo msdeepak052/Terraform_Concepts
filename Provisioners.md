@@ -79,8 +79,6 @@ Provisioners can be:
 
 They **go against the declarative philosophy** of Terraform and should be used with caution.
 
----
-
 ## 🔄 Lifecycle Triggers
 
 - Provisioners run **only after a resource is created**
@@ -95,7 +93,8 @@ provisioner "remote-exec" {
     "echo 'Cleaning up before destroy...'"
   ]
 }
----
+```
+
 ### ⚠️ Provisioner Limitations
 
 - ⚠️ **Provisioners do not run** if the resource is already up-to-date.
@@ -157,6 +156,6 @@ resource "aws_instance" "app_server" {
 }
 
 
-'''
+```
 
 
