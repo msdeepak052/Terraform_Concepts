@@ -95,15 +95,16 @@ provisioner "remote-exec" {
     "echo 'Cleaning up before destroy...'"
   ]
 }
-## ⚠️ Provisioner Limitations
+
+### ⚠️ Provisioner Limitations
 
 - ⚠️ **Provisioners do not run** if the resource is already up-to-date.
 - ❌ This makes them **unsuitable for configuration drift management**.
 - ✅ Instead, use tools like **Ansible** or **Puppet** for better control and idempotency.
 
----
 
-## 🔬 Summary
+
+### 🔬 Summary
 
 | Feature         | Purpose                                         |
 |-----------------|-------------------------------------------------|
