@@ -118,11 +118,46 @@ provisioner "remote-exec" {
 ### 📦 Terraform Example
 ---
 
+### 1.main.tf
+
 ```hcl
+provider "aws" {
+  region = var.aws_region
+}
+
+resource "aws_security_group" "app_sg" {
+  name        = "app_sg"
+  description = "Allow SSH and HTTP"
+
+  ingress {
+    description = "Allow SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Replace with your IP for security
+  }
+
+  ingress {
+    description = "Allow HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
 resource "aws_instance" "app_server" {
-  ami           = "ami-0c55b159cbfafe1f0"
-  instance_type = "t2.micro"
-  key_name      = "my-key"
+  ami           = var.ami_id
+  instance_type = var.instance_type
+  key_name      = var.key_name
+  vpc_security_group_ids = [aws_security_group.app_sg.id]
 
   provisioner "file" {
     source      = "my_app_binary"
@@ -136,7 +171,7 @@ resource "aws_instance" "app_server" {
 
   provisioner "remote-exec" {
     inline = [
-      "sudo apt update",
+      "sudo apt update -y",
       "sudo apt install -y nginx",
       "chmod +x /home/ubuntu/my_app_binary",
       "/home/ubuntu/my_app_binary --config /home/ubuntu/config.json &"
@@ -150,12 +185,83 @@ resource "aws_instance" "app_server" {
   connection {
     type        = "ssh"
     user        = "ubuntu"
-    private_key = file("~/.ssh/my-key.pem")
+    private_key = file(var.private_key_path)
     host        = self.public_ip
+  }
+
+  tags = {
+    Name = "fintech-app-instance"
   }
 }
 
+```
+
+## 2.variables.tf
+
+```hcl
+
+variable "aws_region" {
+  default = "ap-south-1"
+}
+
+variable "ami_id" {
+  description = "Ubuntu AMI ID"
+  default     = "ami-0e35ddab05955cf57"  # Ubuntu 18.04 in us-east-1
+}
+
+variable "instance_type" {
+  default = "t2.micro"
+}
+
+variable "key_name" {
+  description = "Name of the AWS key pair"
+}
+
+variable "private_key_path" {
+  description = "Path to the private SSH key"
+  type        = string
+}
 
 ```
+
+## 3. terraform.tfvars
+
+```hcl
+
+key_name         = "lappynewawss"
+private_key_path = "/home/ubuntu/lappynewawss.pem"
+
+```
+## 4. outputs.tf
+
+```hcl
+
+output "instance_ip" {
+  value = aws_instance.app_server.public_ip
+  description = "Public IP of the EC2 instance"
+}
+
+```
+## 5. config.json
+
+```json
+
+{
+  "api_key": "your_api_key_here",
+  "env": "testing"
+}
+
+```
+
+## 6. my_app_binary
+
+'''sh
+
+Empty file along woth the other files
+
+```
+
+
+
 
 
