@@ -402,7 +402,7 @@ jobs:
 
 ---
 
-## 🧭 **Pro Tip Zone for Deepak**
+## 🧭 **Pro Tip Zone**
 
 💡 *Because you’re already experienced with DevOps:*
 
