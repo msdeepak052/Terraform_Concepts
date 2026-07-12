@@ -1,0 +1,4 @@
+# Only notes/ is tracked in this repo — everything else at the root is excluded.
+/Terraform-Associate-Exam-Simulator/
+/Terraform-Associate-Hashicorp-003/
+/Terraform+Notes+PPT+4th+January+2026+-+KPLABS.pdf
