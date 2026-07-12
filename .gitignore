@@ -2,3 +2,6 @@
 /Terraform-Associate-Exam-Simulator/
 /Terraform-Associate-Hashicorp-003/
 /Terraform+Notes+PPT+4th+January+2026+-+KPLABS.pdf
+
+# Terraform local plugin/provider cache — excluded anywhere in the workspace
+**/.terraform/
