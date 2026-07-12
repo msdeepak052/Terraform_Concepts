@@ -248,7 +248,248 @@ resource "aws_instance" "web" {
 ```
 If `terraform-deployer`'s IAM policy only grants `AmazonS3ReadOnlyAccess`, this `apply` **authenticates successfully** (AWS recognizes the key as valid) but then **fails authorization** with `UnauthorizedOperation: You are not authorized to perform this operation` when it tries to call `RunInstances`. Two entirely different problems: fixing authentication means fixing/rotating the key; fixing authorization means attaching a broader IAM policy (e.g., `AmazonEC2FullAccess`).
 
+In your Terraform configuration:
+
+```hcl
+provider "aws" {
+  region  = "ap-south-1"
+  profile = "terraform-dev"
+}
+```
+
+the `profile` tells the AWS provider **which AWS CLI credentials profile to use**.
+
+## Why is `profile` needed?
+
+Terraform needs AWS credentials to create, modify, or delete AWS resources.
+
+It needs:
+
+* Access Key ID
+* Secret Access Key
+* (Optionally) Session Token
+
+Instead of hardcoding these credentials in your Terraform code (which is insecure), Terraform can reuse the credentials stored by the AWS CLI.
+
+When you run:
+
+```bash
+aws configure --profile terraform-dev
+```
+
+AWS CLI stores something like:
+
+### `~/.aws/credentials`
+
+```ini
+[terraform-dev]
+aws_access_key_id = AKIAxxxxxxxxxxxx
+aws_secret_access_key = xxxxxxxxxxxxxxxxxxxx
+```
+
+### `~/.aws/config`
+
+```ini
+[profile terraform-dev]
+region = ap-south-1
+output = json
+```
+
+Then Terraform reads this profile.
+
+---
+
+# How Terraform uses it
+
+Suppose your files contain:
+
+```hcl
+provider "aws" {
+  region  = "ap-south-1"
+  profile = "terraform-dev"
+}
+```
+
+Terraform internally does something equivalent to:
+
+```
+Look inside ~/.aws/credentials
+
+Find:
+
+[terraform-dev]
+
+Use these credentials
+```
+
+---
+
+# Example
+
+Suppose you're working with multiple AWS accounts.
+
+### Personal Account
+
+```
+[personal]
+aws_access_key_id = AAAA...
+aws_secret_access_key = BBBB...
+```
+
+### Company Dev Account
+
+```
+[terraform-dev]
+aws_access_key_id = CCCC...
+aws_secret_access_key = DDDD...
+```
+
+### Production Account
+
+```
+[production]
+aws_access_key_id = EEEE...
+aws_secret_access_key = FFFF...
+```
+
+Now you can simply change the profile:
+
+```hcl
+provider "aws" {
+  region  = "ap-south-1"
+  profile = "personal"
+}
+```
+
+or
+
+```hcl
+provider "aws" {
+  region  = "ap-south-1"
+  profile = "production"
+}
+```
+
+without changing any credentials.
+
+---
+
+# Where are profiles stored?
+
+### Linux / macOS / WSL
+
+```
+~/.aws/credentials
+~/.aws/config
+```
+
+### Windows
+
+```
+C:\Users\<username>\.aws\credentials
+C:\Users\<username>\.aws\config
+```
+
+---
+
+# How to create a profile
+
+Run:
+
+```bash
+aws configure --profile terraform-dev
+```
+
+You'll be prompted for:
+
+```
+AWS Access Key ID:
+AWS Secret Access Key:
+Default region:
+Output format:
+```
+
+After that, Terraform can use:
+
+```hcl
+profile = "terraform-dev"
+```
+
+---
+
+# What if `profile` is omitted?
+
+Terraform follows the AWS SDK's credential provider chain. It looks for credentials in this general order:
+
+1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+2. The profile specified by the `AWS_PROFILE` environment variable
+3. The `default` profile in `~/.aws/credentials`
+4. IAM Role credentials (if running on an EC2 instance)
+5. ECS task roles, EKS IAM Roles for Service Accounts (IRSA), and other supported credential sources
+
+For example, if your credentials file contains:
+
+```ini
+[default]
+aws_access_key_id = AKIA...
+aws_secret_access_key = ...
+```
+
+then this works without specifying a profile:
+
+```hcl
+provider "aws" {
+  region = "ap-south-1"
+}
+```
+
+Terraform automatically uses the `default` profile.
+
+---
+
+# Why use profiles?
+
+Profiles are useful because they let you:
+
+* Use multiple AWS accounts (personal, dev, staging, production).
+* Avoid hardcoding secrets in Terraform code.
+* Easily switch between accounts.
+* Reuse the same credentials that the AWS CLI uses.
+
+---
+
+## Visual workflow
+
+```text
+                Terraform
+                    │
+                    ▼
+      provider "aws" {
+          profile = "terraform-dev"
+      }
+                    │
+                    ▼
+      ~/.aws/credentials
+                    │
+        [terraform-dev]
+          Access Key
+          Secret Key
+                    │
+                    ▼
+             AWS Authentication
+                    │
+                    ▼
+            Create EC2, S3, VPC...
+```
+
+
+
+
 **What if you skip creating a scoped IAM user and just use root credentials for Terraform?** If that access key ever leaks (committed to a public repo, pasted into a support ticket, left in a Docker image layer), the blast radius is **the entire AWS account** — billing, every service, every resource — not just what Terraform manages. A scoped IAM user limits the blast radius of a leak to whatever that policy actually allows.
+
+### Best practice
+
+For local development, using AWS CLI profiles is a common and secure approach. In CI/CD pipelines (such as GitHub Actions, GitLab CI, or Jenkins), it's generally better **not** to use `profile`. Instead, provide credentials through environment variables or, preferably, use temporary credentials by assuming an IAM role (for example, via OIDC). This avoids storing long-lived credentials on the build server and aligns with AWS security best practices.
 
 ### Real-World Scenario 1 — A Leaked Key, Two Different Outcomes
 Company A hardcodes their **root** access key into a `provider "aws" {}` block that accidentally gets pushed to a public GitHub repo. Within minutes, automated scanners find it; the attacker has full account control — they can spin up cryptomining instances, exfiltrate S3 data, and even close the account. Company B made the same mistake, but had used a scoped `terraform-deployer` IAM user with only EC2/VPC permissions. The attacker can create/delete EC2 instances (real damage, but contained) — they cannot touch billing, IAM, or any other service. Same mistake, wildly different blast radius, purely because of the authorization design.
