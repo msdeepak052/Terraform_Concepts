@@ -181,9 +181,9 @@ terraform -version
 **Linux (two valid approaches):**
 ```bash
 # Manual (good for disposable/CI environments)
-wget https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_linux_amd64.zip
-unzip terraform_1.9.0_linux_amd64.zip
-sudo mv terraform /usr/local/bin/
+wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt update && sudo apt install terraform
 
 # Package manager (good for long-lived machines you'll upgrade later)
 wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
@@ -193,7 +193,7 @@ sudo apt update && sudo apt install terraform
 For RHEL/CentOS/Fedora/Amazon Linux, the equivalent is HashiCorp's `yum` repo:
 ```bash
 sudo yum install -y yum-utils
-sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
 sudo yum -y install terraform
 ```
 
