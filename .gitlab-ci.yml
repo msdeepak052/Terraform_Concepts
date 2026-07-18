@@ -31,8 +31,6 @@ workflow:
 
 variables:
   TF_DIR: "Terraform_Practise/16.Practise_Sets/Q1"   # <-- override per run
-  AWS_REGION: "ap-south-1"
-  TF_STATE_BUCKET: "terraform-practise-backend-deepak"
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
@@ -55,13 +53,11 @@ default:
 # Hidden templates (not run directly — pulled into real jobs via !reference)
 .tf_init_full:
   script:
-    - >
-      terraform init -reconfigure
-      -backend-config="bucket=${TF_STATE_BUCKET}"
-      -backend-config="key=${TF_DIR}/terraform.tfstate"
-      -backend-config="region=${AWS_REGION}"
-      -backend-config="encrypt=true"
-      -backend-config="use_lockfile=true"
+    # bucket/region/encrypt/use_lockfile are already hardcoded in each
+    # question's providers.tf backend block — only `key` is left out of
+    # that block (on purpose, so the same block works for every question),
+    # so `key` is the only thing that needs to come from the CLI here.
+    - terraform init -reconfigure -backend-config="key=${TF_DIR}/terraform.tfstate"
 
 .tf_init_offline:
   script:
@@ -84,11 +80,15 @@ tf-validate:
   script:
     - !reference [.tf_init_offline, script]
     - terraform validate
+  needs:
+    - tf-init
 
 tf-fmt:
   stage: fmt
   script:
     - terraform fmt -check
+  needs:
+    - tf-validate
 
 tf-plan:
   stage: plan
@@ -100,6 +100,8 @@ tf-plan:
     paths:
       - ${TF_DIR}/tfplan
     expire_in: 3 days
+  needs:
+    - tf-fmt
 
 tf-apply:
   stage: apply
@@ -108,6 +110,8 @@ tf-apply:
   script:
     - !reference [.tf_init_full, script]
     - terraform apply -auto-approve tfplan
+  needs:
+    - tf-plan
 
 tf-destroy:
   stage: destroy
@@ -116,3 +120,5 @@ tf-destroy:
   script:
     - !reference [.tf_init_full, script]
     - terraform destroy -auto-approve
+  needs:
+    - tf-apply

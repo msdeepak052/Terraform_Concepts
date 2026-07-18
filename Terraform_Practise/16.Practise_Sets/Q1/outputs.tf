@@ -1,54 +1,44 @@
 output "instance_id" {
   description = "EC2 Instance ID"
-  value       = aws_instance.web.id
+  value       = aws_instance.deepak_ec2.id
 }
 
 output "instance_arn" {
   description = "EC2 Instance ARN"
-  value       = aws_instance.web.arn
+  value       = aws_instance.deepak_ec2.arn
 }
 
 output "public_ip" {
   description = "Public IP Address"
-  value       = aws_instance.web.public_ip
-}
-
-output "private_ip" {
-  description = "Private IP Address"
-  value       = aws_instance.web.private_ip
+  value       = aws_instance.deepak_ec2.public_ip
 }
 
 output "public_dns" {
   description = "Public DNS Name"
-  value       = aws_instance.web.public_dns
-}
-
-output "private_dns" {
-  description = "Private DNS Name"
-  value       = aws_instance.web.private_dns
+  value       = aws_instance.deepak_ec2.public_dns
 }
 
 output "availability_zone" {
   description = "Availability Zone"
-  value       = aws_instance.web.availability_zone
+  value       = aws_instance.deepak_ec2.availability_zone
 }
 
 output "subnet_id" {
   description = "Subnet ID"
-  value       = aws_instance.web.subnet_id
+  value       = aws_instance.deepak_ec2.subnet_id
 }
 
 output "vpc_security_group_ids" {
   description = "Attached Security Groups"
-  value       = aws_instance.web.vpc_security_group_ids
+  value       = aws_instance.deepak_ec2.vpc_security_group_ids
 }
 
 output "instance_state" {
   description = "Current EC2 State"
-  value       = aws_instance.web.instance_state
+  value       = aws_instance.deepak_ec2.instance_state
 }
 
 output "tags" {
   description = "Tags applied to EC2"
-  value       = aws_instance.web.tags
+  value       = aws_instance.deepak_ec2.tags
 }
