@@ -1,0 +1,102 @@
+# Terraform practice pipeline — GitLab CI
+#
+# Usage: only ever triggered via the GitLab web UI ("Run pipeline").
+# Before clicking Run, set the TF_DIR variable in the "Run pipeline" form
+# to whichever question folder you're currently practicing, e.g.:
+#   Terraform_Practise/16.Practise_Sets/Q2
+# Nothing else in this file, and nothing in the .tf files, needs to change
+# between questions — the S3 state key is derived from TF_DIR at init time.
+#
+# Flow: init (manual) -> validate -> fmt -> plan (all automatic once
+# started) -> apply (manual) -> destroy (manual). apply/destroy are a hard
+# manual gate on purpose — this pipeline will never auto-apply or
+# auto-destroy real infrastructure.
+
+stages:
+  - init
+  - validate
+  - fmt
+  - plan
+  - apply
+  - destroy
+
+workflow:
+  rules:
+    # Only ever create a pipeline from a manual "Run pipeline" click in the
+    # GitLab UI — never on a git push or merge request event.
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+variables:
+  TF_DIR: "Terraform_Practise/16.Practise_Sets/Q1"   # <-- override per run
+  AWS_REGION: "ap-south-1"
+  TF_STATE_BUCKET: "terraform-practise-backend-deepak"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+default:
+  image: hashicorp/terraform:1.10
+  # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY come from GitLab CI/CD
+  # variables (Settings > CI/CD > Variables — masked, and Protected if this
+  # only ever runs against a protected branch). They're injected as env
+  # vars automatically; Terraform's AWS provider picks them up on its own,
+  # nothing to export here.
+  before_script:
+    - cd "${TF_DIR}"
+
+# Hidden templates (not run directly — pulled into real jobs via !reference)
+.tf_init_full:
+  script:
+    - >
+      terraform init -reconfigure
+      -backend-config="bucket=${TF_STATE_BUCKET}"
+      -backend-config="key=${TF_DIR}/terraform.tfstate"
+      -backend-config="region=${AWS_REGION}"
+      -backend-config="encrypt=true"
+      -backend-config="use_lockfile=true"
+
+.tf_init_offline:
+  script:
+    # validate doesn't need the S3 backend or AWS credentials at all
+    - terraform init -backend=false
+
+tf-init:
+  stage: init
+  when: manual
+  script:
+    - !reference [.tf_init_full, script]
+
+tf-validate:
+  stage: validate
+  script:
+    - !reference [.tf_init_offline, script]
+    - terraform validate
+
+tf-fmt:
+  stage: fmt
+  script:
+    - terraform fmt -check
+
+tf-plan:
+  stage: plan
+  script:
+    - !reference [.tf_init_full, script]
+    - terraform plan -out=tfplan
+  artifacts:
+    name: "tfplan-$CI_PIPELINE_ID"
+    paths:
+      - ${TF_DIR}/tfplan
+    expire_in: 3 days
+
+tf-apply:
+  stage: apply
+  when: manual
+  script:
+    - !reference [.tf_init_full, script]
+    - terraform apply -auto-approve tfplan
+
+tf-destroy:
+  stage: destroy
+  when: manual
+  script:
+    - !reference [.tf_init_full, script]
+    - terraform destroy -auto-approve

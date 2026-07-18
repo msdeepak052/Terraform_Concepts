@@ -10,29 +10,31 @@ Repo layout:
   - Working branch: terraform-associate-hashicorp-004
 
 Remotes:
-  origin  -> https://github.com/msdeepak052/Terraform_Concepts.git
+  origin  -> fetch: https://github.com/msdeepak052/Terraform_Concepts.git
+             push:  BOTH https://github.com/msdeepak052/Terraform_Concepts.git
+                    AND  https://gitlab.com/terraform-hashicorp-associate/terraform-hashicorp-004-complete.git
   gitlab  -> https://gitlab.com/terraform-hashicorp-associate/terraform-hashicorp-004-complete.git
+             (kept as a separate remote too, for pushing to GitLab only if ever needed)
 
-  origin is the default upstream for this branch, so plain `git push` /
-  `git pull` (no remote name) always targets GitHub. GitLab is never
-  updated automatically -- push to it explicitly when you want it synced.
+  `origin` has two push URLs configured (see setup steps below), so a
+  single `git push` sends the branch to GitHub AND GitLab in one command.
+  `git pull` still only ever pulls from GitHub (fetch URL is unchanged) --
+  that's deliberate, so pulling never tries to merge in unrelated GitLab state.
 
 --------------------------------------------------------------------
-Everyday workflow
+Everyday workflow (this is really it)
 --------------------------------------------------------------------
-git status                     # see what changed / what's staged
-git add <file>                 # stage a specific file (never `git add -A` blindly)
+git add -A                     # stage everything
 git commit -m "message"        # commit staged changes
+git push                       # pushes current branch to BOTH GitHub and GitLab
 
 git pull                       # pull latest from origin (GitHub) into current branch
-git push                       # push current branch to origin (GitHub) only
 
 --------------------------------------------------------------------
-Keeping GitLab in sync too
+Pushing to just one remote (rarely needed, dual-push covers normal use)
 --------------------------------------------------------------------
 git push gitlab terraform-associate-hashicorp-004     # push to GitLab only
-git push origin terraform-associate-hashicorp-004     # push to GitHub only
-git push origin terraform-associate-hashicorp-004 && git push gitlab terraform-associate-hashicorp-004   # push both
+git -c remote.origin.pushurl=https://github.com/msdeepak052/Terraform_Concepts.git push origin terraform-associate-hashicorp-004   # push to GitHub only, bypassing the dual pushurl for this one command
 
 --------------------------------------------------------------------
 Checking state
@@ -62,6 +64,12 @@ git push -u gitlab terraform-associate-hashicorp-004      # push to GitLab too
 # after pushing to gitlab with -u, upstream tracking pointed at gitlab;
 # reset it back to origin so plain push/pull default to GitHub:
 git branch --set-upstream-to=origin/terraform-associate-hashicorp-004 terraform-associate-hashicorp-004
+
+# make a single `git push` reach both GitHub and GitLab: add a second
+# push URL onto origin (fetch URL stays GitHub-only, untouched)
+git remote set-url --add --push origin https://github.com/msdeepak052/Terraform_Concepts.git
+git remote set-url --add --push origin https://gitlab.com/terraform-hashicorp-associate/terraform-hashicorp-004-complete.git
+git remote -v   # should now show origin with TWO push lines (github + gitlab)
 
 --------------------------------------------------------------------
 Amending the last commit (only if it hasn't been relied on elsewhere)
