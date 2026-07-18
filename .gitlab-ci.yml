@@ -34,7 +34,13 @@ variables:
   TF_INPUT: "false"
 
 default:
-  image: hashicorp/terraform:1.10
+  image:
+    name: hashicorp/terraform:1.10
+    # The image's own ENTRYPOINT is the terraform binary itself, which
+    # swallows GitLab's `sh -c "<script>"` invocation (producing errors like
+    # `Terraform has no command named "sh"`). Clearing it lets GitLab run
+    # its shell wrapper inside the container as normal.
+    entrypoint: [""]
   # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY come from GitLab CI/CD
   # variables (Settings > CI/CD > Variables — masked, and Protected if this
   # only ever runs against a protected branch). They're injected as env
