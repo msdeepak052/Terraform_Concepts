@@ -71,6 +71,11 @@ default:
 tf-init:
   stage: init
   when: manual
+  # Manual jobs default to allow_failure: true, which means GitLab does NOT
+  # wait for them — later stages start immediately even though this job is
+  # still sitting untriggered. allow_failure: false makes it a real blocking
+  # gate: validate/fmt/plan won't start until this is clicked and succeeds.
+  allow_failure: false
   script:
     - !reference [.tf_init_full, script]
 
@@ -99,6 +104,7 @@ tf-plan:
 tf-apply:
   stage: apply
   when: manual
+  allow_failure: false
   script:
     - !reference [.tf_init_full, script]
     - terraform apply -auto-approve tfplan
@@ -106,6 +112,7 @@ tf-apply:
 tf-destroy:
   stage: destroy
   when: manual
+  allow_failure: false
   script:
     - !reference [.tf_init_full, script]
     - terraform destroy -auto-approve
