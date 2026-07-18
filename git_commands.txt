@@ -24,6 +24,7 @@ Remotes:
 --------------------------------------------------------------------
 Everyday workflow (this is really it)
 --------------------------------------------------------------------
+terraform fmt
 git add -A                     # stage everything
 git commit -m "added AZ for Q1 EC2"        # commit staged changes
 git push                       # pushes current branch to BOTH GitHub and GitLab
