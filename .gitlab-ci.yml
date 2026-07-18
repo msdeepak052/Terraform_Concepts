@@ -23,8 +23,11 @@ stages:
 workflow:
   rules:
     # Only ever create a pipeline from a manual "Run pipeline" click in the
-    # GitLab UI — never on a git push or merge request event.
+    # GitLab UI — never on a git push or merge request event. The explicit
+    # `when: never` fallback is required: without it, some pipeline sources
+    # can still slip through as an implicit default.
     - if: '$CI_PIPELINE_SOURCE == "web"'
+    - when: never
 
 variables:
   TF_DIR: "Terraform_Practise/16.Practise_Sets/Q1"   # <-- override per run
