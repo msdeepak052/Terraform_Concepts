@@ -207,6 +207,141 @@ terraform refresh   # reconciles STATE ONLY with reality, without a full plan/ap
 ```
 When drift is found, you have exactly two honest choices: (1) let `apply` revert the real infrastructure back to match your `.tf` config (the "config is the source of truth" default), or (2) update your `.tf` config to match the new reality, if the manual change was actually correct and should be kept going forward. **There is no third option where Terraform silently adopts the drifted value as the new desired state without you updating the code** — this is a deliberately enforced design decision, not a limitation.
 
+Let's make this concrete with a real-world scenario.
+
+Imagine you have a Terraform configuration file named `main.tf` that deploys an RDS database. Currently, your code, your S3 state file, and the actual AWS console are all perfectly in sync on **`m6gd`**.
+
+```hcl
+# main.tf
+resource "aws_db_instance" "my_db" {
+  allocated_storage = 20
+  engine            = "postgres"
+  instance_class    = "db.m6gd.large" # <--- Your local code says this
+}
+
+```
+
+Then, **Scenario occurs:** An engineer logs into the AWS Web Console and manually modifies the instance type to **`db.m7gd.large`** to handle a traffic spike.
+
+Here is exactly what happens on your terminal and in your S3 state bucket under each scenario.
+
+---
+
+## Scenario 1: You run `terraform plan`
+
+Terraform reads the configuration, fetches the real-world state from AWS, and compares them.
+
+### What you see on your screen:
+
+```diff
+# aws_db_instance.my_db has been changed outside of Terraform.
+# (This is the implicit refresh recognizing the console change)
+
+Note: Objects have changed outside of Terraform or its state.
+
+Terraform will perform the following actions:
+
+  # aws_db_instance.my_db will be updated in-place
+~ resource "aws_db_instance" "my_db" {
+      id             = "mydb-id"
+~     instance_class = "db.m7gd.large" -> "db.m6gd.large"
+  }
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+
+```
+
+### The State:
+
+* **Local `.tf` Code:** `db.m6gd.large`
+* **AWS Reality:** `db.m7gd.large`
+* **S3 State File:** **Still `db.m6gd.large**` (S3 was not updated because `plan` is a read-only command).
+
+---
+
+## Scenario 2: You run `terraform apply` (Plan + Apply)
+
+You decide to go ahead and run the apply command to enforce your configuration.
+
+### What you see on your screen:
+
+```diff
+# (First, it shows you the same plan as Scenario 1)
+~ resource "aws_db_instance" "my_db" {
+~     instance_class = "db.m7gd.large" -> "db.m6gd.large"
+  }
+
+Do you want to perform these actions?
+  Enter a value: yes
+
+aws_db_instance.my_db: Modifying... [id=mydb-id]
+aws_db_instance.my_db: Modifications complete after 2m30s
+
+Apply complete! Resources: 0 added, 1 changed, 0 destroyed.
+
+```
+
+### The State:
+
+* **AWS Reality:** **Changed back to `db.m6gd.large**` (Terraform actively overrode the manual change).
+* **S3 State File:** **Updated to `db.m6gd.large**` (reflecting the successful apply).
+* **Local `.tf` Code:** `db.m6gd.large`
+
+---
+
+## Scenario 3: You run `terraform refresh`
+
+*(Or the modern equivalent: `terraform apply -refresh-only` with a `yes` approval)*
+
+You want your S3 state file to align with the new AWS reality, but you do not want to modify any AWS infrastructure.
+
+### What happens:
+
+Terraform queries AWS, sees the database is actually `db.m7gd.large`, and immediately updates the S3 state file to match it.
+
+### The State:
+
+* **AWS Reality:** `db.m7gd.large`
+* **S3 State File:** **Updated to `db.m7gd.large**`
+* **Local `.tf` Code:** **Still `db.m6gd.large**`
+
+> ⚠️ **The catch:** Because your S3 state file and AWS now agree (`db.m7gd.large`), but your `main.tf` code still says `db.m6gd.large`, your very next standard `terraform plan` will immediately try to change the AWS database back to `db.m6gd.large`.
+> To fix this, you must manually update your code in `main.tf` to `db.m7gd.large`.
+
+---
+
+## Scenario 4: You run `terraform plan -refresh-only`
+
+You want to see *if* there is any drift out there, but you don't want to change any infrastructure or touch your S3 state file yet.
+
+### What you see on your screen:
+
+```diff
+# aws_db_instance.my_db has been changed outside of Terraform.
+
+Note: Objects have changed outside of Terraform or its state.
+
+This is a preview of the state changes only. No real infrastructure 
+will be created, modified, or destroyed.
+
+  # aws_db_instance.my_db will be updated in-state
+~ resource "aws_db_instance" "my_db" {
+      id             = "mydb-id"
+~     instance_class = "db.m6gd.large" -> "db.m7gd.large"
+  }
+
+Would you like to update the state file? (This plan cannot be applied)
+
+```
+
+*(Since you only ran `plan`, nothing is committed).*
+
+### The State:
+
+* **AWS Reality:** `db.m7gd.large`
+* **S3 State File:** **Still `db.m6gd.large**` (S3 was not updated because this was just a `plan` preview).
+* **Local `.tf` Code:** `db.m6gd.large`
+
 ### `removed` blocks — the declarative way to stop managing a resource without destroying it
 ```hcl
 removed {
