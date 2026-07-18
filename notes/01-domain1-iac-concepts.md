@@ -169,8 +169,12 @@ This section is the hands-on prerequisite work — necessary before writing any 
 ### 4.1 Installing Terraform
 Terraform ships as a single static binary — no installer, no background service.
 
-**Windows:**
+**Windows (two valid approaches):**
 ```powershell
+# Chocolatey (recommended - handles upgrades via `choco upgrade` going forward)
+choco install terraform
+
+# Manual (zip-based, no package manager required)
 # Download the zip from developer.hashicorp.com/terraform/install, then:
 # 1. Unzip to C:\terraform\
 # 2. Add C:\terraform\ to your System PATH
@@ -225,6 +229,18 @@ Terraform has no identity system of its own for AWS — it borrows real AWS cred
 1. Create an AWS account (this creates the **root user** — email + password, tied to a payment method).
 2. Enable **MFA** on the root user immediately — a second proof of identity (an authenticator app code) on top of the password, so a leaked password alone isn't enough to sign in.
 3. Create a dedicated **IAM user** (e.g., `terraform-deployer`) with programmatic access (an Access Key ID + Secret Access Key) — this, not root, is what Terraform will actually use.
+4. Configure the AWS CLI with that user's keys, under a named profile Terraform will reference via `profile = "..."`:
+   ```bash
+   aws configure --profile terraform-dev
+   ```
+   You'll be prompted for four values, in order:
+   ```
+   AWS Access Key ID [None]: AKIA...
+   AWS Secret Access Key [None]: ****************
+   Default region name [None]: ap-south-1
+   Default output format [None]: json
+   ```
+   This writes the key pair to `~/.aws/credentials` (`C:\Users\<user>\.aws\credentials` on Windows) under a `[terraform-dev]` section, and the region/output default to `~/.aws/config` under `[profile terraform-dev]` — never into your Terraform code or version control. Verify it worked with `aws sts get-caller-identity --profile terraform-dev`, which should echo back the IAM user's ARN.
 
 **Authentication vs. Authorization — a distinction worth internalizing, not memorizing:**
 

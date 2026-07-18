@@ -5,3 +5,7 @@
 
 # Terraform local plugin/provider cache — excluded anywhere in the workspace
 **/.terraform/
+
+# AWS IAM access key credentials — never commit real keys
+/deepak-terraform-deployer_accessKeys.csv
+**/*accessKeys*.csv
