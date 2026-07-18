@@ -25,7 +25,7 @@ Remotes:
 Everyday workflow (this is really it)
 --------------------------------------------------------------------
 git add -A                     # stage everything
-git commit -m "message"        # commit staged changes
+git commit -m "added AZ for Q1 EC2"        # commit staged changes
 git push                       # pushes current branch to BOTH GitHub and GitLab
 
 git pull                       # pull latest from origin (GitHub) into current branch
