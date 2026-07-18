@@ -1,0 +1,78 @@
+====================================================================
+Git command reference for this workspace (D:\Study\Terraform2)
+====================================================================
+
+Repo layout:
+  - Only notes/ (plus .gitignore, this file, etc.) is tracked.
+  - Excluded via .gitignore: Terraform-Associate-Exam-Simulator/,
+    Terraform-Associate-Hashicorp-003/, the KPLABS PDF, any .terraform/
+    cache folder, and the AWS accessKeys CSV.
+  - Working branch: terraform-associate-hashicorp-004
+
+Remotes:
+  origin  -> https://github.com/msdeepak052/Terraform_Concepts.git
+  gitlab  -> https://gitlab.com/terraform-hashicorp-associate/terraform-hashicorp-004-complete.git
+
+  origin is the default upstream for this branch, so plain `git push` /
+  `git pull` (no remote name) always targets GitHub. GitLab is never
+  updated automatically -- push to it explicitly when you want it synced.
+
+--------------------------------------------------------------------
+Everyday workflow
+--------------------------------------------------------------------
+git status                     # see what changed / what's staged
+git add <file>                 # stage a specific file (never `git add -A` blindly)
+git commit -m "message"        # commit staged changes
+
+git pull                       # pull latest from origin (GitHub) into current branch
+git push                       # push current branch to origin (GitHub) only
+
+--------------------------------------------------------------------
+Keeping GitLab in sync too
+--------------------------------------------------------------------
+git push gitlab terraform-associate-hashicorp-004     # push to GitLab only
+git push origin terraform-associate-hashicorp-004     # push to GitHub only
+git push origin terraform-associate-hashicorp-004 && git push gitlab terraform-associate-hashicorp-004   # push both
+
+--------------------------------------------------------------------
+Checking state
+--------------------------------------------------------------------
+git remote -v                                  # list configured remotes
+git branch -a                                  # list local + remote-tracking branches
+git branch --show-current                      # current branch name
+git log --oneline -10                          # recent commit history
+git log --oneline --all --graph -15            # full graph across all branches
+git ls-remote --heads <repo-url>                # inspect a remote's branches without cloning
+
+--------------------------------------------------------------------
+One-time setup steps already performed (for reference / re-doing elsewhere)
+--------------------------------------------------------------------
+git init
+git remote add origin https://github.com/msdeepak052/Terraform_Concepts.git
+git remote add gitlab https://gitlab.com/terraform-hashicorp-associate/terraform-hashicorp-004-complete.git
+git fetch origin
+
+git checkout --orphan terraform-associate-hashicorp-004   # branch with no shared history
+git add .gitignore notes/
+git commit -m "Add Terraform Associate (003/004) exam-prep notes"
+
+git push -u origin terraform-associate-hashicorp-004      # first push + set upstream
+git push -u gitlab terraform-associate-hashicorp-004      # push to GitLab too
+
+# after pushing to gitlab with -u, upstream tracking pointed at gitlab;
+# reset it back to origin so plain push/pull default to GitHub:
+git branch --set-upstream-to=origin/terraform-associate-hashicorp-004 terraform-associate-hashicorp-004
+
+--------------------------------------------------------------------
+Amending the last commit (only if it hasn't been relied on elsewhere)
+--------------------------------------------------------------------
+git commit --amend -m "new message"
+git push --force-with-lease origin terraform-associate-hashicorp-004   # required after amend, since history rewrote
+
+--------------------------------------------------------------------
+Notes
+--------------------------------------------------------------------
+- Never use `git push --force` (no lease) or `git reset --hard` without
+  checking `git status` first -- both can silently discard work.
+- `--force-with-lease` refuses to push if someone else updated the
+  remote branch since your last fetch, which plain `--force` would not catch.
