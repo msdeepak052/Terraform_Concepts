@@ -1,3 +1,4 @@
+aws_region = "ap-south-1"
 ingress_rules = [
   {
     from_port   = 22
