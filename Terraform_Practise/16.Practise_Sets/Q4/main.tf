@@ -34,7 +34,7 @@ resource "aws_s3_bucket" "ec2-s3-bucket" {
   bucket = "${var.bucket_name}-${var.aws_region}-${data.aws_caller_identity.current.account_id}-${random_string.suffix.result}"
 
   tags = merge(local.common_tags, {
-    Name        = "${aws_s3_bucket.ec2-s3-bucket.bucket}-${var.aws_region}"
+    Name        = "${var.bucket_name}-${var.aws_region}-${data.aws_caller_identity.current.account_id}-${random_string.suffix.result}"
     Environment = "Dev"
     }
   )
