@@ -41,6 +41,7 @@ Organized by the **official HashiCorp exam domains** (verified against HashiCorp
 | File | Covers |
 |---|---|
 | [16-practice-questions-with-answers.md](16-practice-questions-with-answers.md) | 57 practice scenarios — Beginner (7), Intermediate (10), Advanced (10), Module-Focused (10), Real-World Industry (20) — each with a full worked AWS answer plus an **Industry Best-Practice Notes** callout (what a senior engineer would change and why) |
+| [16.0-practise-questions.md](16.0-practise-questions.md) | The same 57 scenarios stripped to just the requirement text, same five sections, no answers/code — attempt these yourself before checking file 16 |
 | [17-practice-questions-by-domain.md](17-practice-questions-by-domain.md) | The same 57 scenarios, reindexed by the 8 official exam domains (matching files 01-10), then by difficulty tier (Beginner or Easy / Intermediate / Hard) within each domain — a navigation index pointing back to file 16, not a duplicate of its content |
 
 **Status: COMPLETE.** All 17 files written. Every lecture in the original course list (both the Terraform and Terragrunt sections) has been cross-checked against these notes and folded in — including topics that needed a dedicated pass after the first draft (see below).
