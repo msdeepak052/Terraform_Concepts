@@ -7,10 +7,10 @@ variable "ingress_rules" {
   description = "List of ingress security group rules"
 
   type = list(object({
-    from_port  = number
-    to_port    = number
-    protocol   = string
-    cidr       = string
+    from_port   = number
+    to_port     = number
+    protocol    = string
+    cidr        = string
     description = string
   }))
 }
