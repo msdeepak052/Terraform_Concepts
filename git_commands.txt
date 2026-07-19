@@ -24,12 +24,14 @@ Remotes:
 --------------------------------------------------------------------
 Everyday workflow (this is really it)
 --------------------------------------------------------------------
-terraform fmt
-git add -A                     # stage everything
-git commit -m "Screenshots for Q1 added"        # commit staged changes
-git push                       # pushes current branch to BOTH GitHub and GitLab
 
 git pull                       # pull latest from origin (GitHub) into current branch
+terraform fmt
+git add -A                     # stage everything
+git commit -m "Q3 Added"        # commit staged changes
+git push                       # pushes current branch to BOTH GitHub and GitLab
+
+
 
 --------------------------------------------------------------------
 Pushing to just one remote (rarely needed, dual-push covers normal use)
