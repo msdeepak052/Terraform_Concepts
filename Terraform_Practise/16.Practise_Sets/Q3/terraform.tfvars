@@ -6,6 +6,7 @@ ingress_rules = [
     protocol    = "tcp"
     cidr        = "10.0.0.0/16"
     description = "SSH access"
+    name        = "ssh_access"
   },
   {
     from_port   = 80
@@ -13,6 +14,7 @@ ingress_rules = [
     protocol    = "tcp"
     cidr        = "0.0.0.0/0"
     description = "HTTP access"
+    name        = "http_access"
   }
 ]
 
@@ -21,5 +23,6 @@ egress_rules = [
     protocol    = "-1"
     cidr        = "0.0.0.0/0"
     description = "Allow all outbound traffic"
+    name        = "allow_all_outbound"
   }
 ]
