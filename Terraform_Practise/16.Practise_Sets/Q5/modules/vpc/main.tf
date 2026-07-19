@@ -54,7 +54,7 @@ resource "aws_eip" "nat_eip" {
 
 resource "aws_nat_gateway" "nat_gw" {
   allocation_id = aws_eip.nat_eip.id
-  subnet_id     = aws_subnet.subnets["public-subnet-1"].id
+  subnet_id     = [for name, s in aws_subnet.subnets : s.id if can(regex("public", lower(name)))][0]
 
   tags = merge(var.tags, {
     Name = "${var.vpc_name}-nat-gw"
