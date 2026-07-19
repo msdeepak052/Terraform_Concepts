@@ -25,6 +25,7 @@ Remotes:
 Everyday workflow (this is really it)
 --------------------------------------------------------------------
 
+cd D:\Study\Terraform2\Terraform_Practise\16.Practise_Sets\Q4
 git pull                       # pull latest from origin (GitHub) into current branch
 terraform fmt
 git add -A                     # stage everything
