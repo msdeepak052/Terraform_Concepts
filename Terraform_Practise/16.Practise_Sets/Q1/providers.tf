@@ -1,4 +1,11 @@
 terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0" # allows any 6.x (minor/patch updates), blocks a future 7.0 breaking change
+    }
+  }
+
   backend "s3" {
     bucket       = "terraform-practise-backend-deepak"
     region       = "ap-south-1"

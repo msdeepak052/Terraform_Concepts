@@ -3,9 +3,11 @@ resource "aws_security_group" "http_ssh_sg"{
 	description = "Allow http and ssh inbound traffic and all outbound traffic"
 	vpc_id      = data.aws_vpc.selected.id
 	
-	tags = merge(locals.common_tags, {
-			name = "http_ssh_sg_test" }
-    )
+    
+    tags = merge(local.common_tags, {
+    Name = "http_ssh_sg_test"
+    }
+  )
 
 
 }
