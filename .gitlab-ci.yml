@@ -33,6 +33,11 @@ variables:
   TF_DIR: "Terraform_Practise/16.Practise_Sets/Q6"   # <-- override per run
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
+  # Leave TF_LOG empty for normal runs. Set it in the "Run pipeline" form
+  # (TRACE / DEBUG / INFO / WARN / ERROR / JSON) only when troubleshooting —
+  # the log is picked up as a job artifact (terraform-debug.log) on every job.
+  TF_LOG: ""
+  TF_LOG_PATH: "${CI_PROJECT_DIR}/terraform-debug.log"
 
 default:
   image:
@@ -74,6 +79,11 @@ tf-init:
   allow_failure: false
   script:
     - !reference [.tf_init_full, script]
+  artifacts:
+    when: always
+    paths:
+      - terraform-debug.log
+    expire_in: 3 days
 
 tf-validate:
   stage: validate
@@ -82,6 +92,11 @@ tf-validate:
     - terraform validate
   needs:
     - tf-init
+  artifacts:
+    when: always
+    paths:
+      - terraform-debug.log
+    expire_in: 3 days
 
 tf-fmt:
   stage: fmt
@@ -96,9 +111,11 @@ tf-plan:
     - !reference [.tf_init_full, script]
     - terraform plan -out=tfplan
   artifacts:
+    when: always
     name: "tfplan-$CI_PIPELINE_ID"
     paths:
       - ${TF_DIR}/tfplan
+      - terraform-debug.log
     expire_in: 3 days
   needs:
     - tf-fmt
@@ -110,6 +127,11 @@ tf-apply:
   script:
     - !reference [.tf_init_full, script]
     - terraform apply -auto-approve tfplan
+  artifacts:
+    when: always
+    paths:
+      - terraform-debug.log
+    expire_in: 3 days
   needs:
     - tf-plan
 
@@ -120,5 +142,10 @@ tf-destroy:
   script:
     - !reference [.tf_init_full, script]
     - terraform destroy -auto-approve
+  artifacts:
+    when: always
+    paths:
+      - terraform-debug.log
+    expire_in: 3 days
   needs:
     - tf-apply
