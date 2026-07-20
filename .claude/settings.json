@@ -2,7 +2,15 @@
   "permissions": {
     "allow": [
       "Bash(mkdir -p \"/d/Study/Terraform2/Terraform_Practise/16.Practise_Sets/Q6/modules/ec2/userdata\")",
-      "Bash(terraform fmt *)"
+      "Bash(terraform fmt *)",
+      "Bash(chmod 400 \"/c/Users/DeepakRK/.ssh/lappynewawss.pem\")",
+      "Bash(icacls.exe)",
+      "Bash(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -i \"/c/Users/DeepakRK/.ssh/lappynewawss.pem\" ec2-user@52.66.198.49 \"curl -s -o /dev/null -w 'HTTP %{http_code}\\\\n' http://localhost && echo '--- cloud-init tail ---' && sudo tail -n 20 /var/log/cloud-init-output.log\")",
+      "Bash(mkdir -p /c/keys)",
+      "Bash(cp \"/c/Users/DeepakRK/.ssh/lappynewawss.pem\" /c/keys/lappynewawss.pem)",
+      "Bash(cp \"/d/Study/lappynewawss.pem\" /c/keys/lappynewawss.pem)",
+      "Bash(icacls.exe \"C:\\\\\\\\keys\\\\\\\\lappynewawss.pem\" /reset)",
+      "Bash(icacls.exe \"C:\\\\\\\\keys\\\\\\\\lappynewawss.pem\" /grant:r \"DEEPAKRK\\\\\\\\DeepakRK:\\(R\\)\")"
     ],
     "additionalDirectories": [
       "D:\\Study\\Terraform2\\Terraform_Practise\\16.Practise_Sets\\Q6\\modules\\ec2"
