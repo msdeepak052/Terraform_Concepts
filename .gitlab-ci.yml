@@ -30,7 +30,7 @@ workflow:
     - when: never
 
 variables:
-  TF_DIR: "Terraform_Practise/16.Practise_Sets/Q5"   # <-- override per run
+  TF_DIR: "Terraform_Practise/16.Practise_Sets/Q6"   # <-- override per run
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
