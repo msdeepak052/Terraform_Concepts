@@ -1230,3 +1230,90 @@ Yes. There are two common patterns:
 2. **Platform or landing-zone modules** that may create many security groups: `for_each` at the module level is very common because it scales without duplicating configuration.
 
 For a reusable infrastructure library, your `for_each` approach is an excellent design. It keeps the security group module generic while allowing the root module to define as many security groups as needed.
+
+---
+
+# Fixing `subnet_id = module.vpc.public_subnet_ids[0]` — Hardcoded Subnet Placement
+
+The problem flagged in `main.tf`:
+
+```hcl
+subnet_id = module.vpc.public_subnet_ids[0]
+```
+
+This breaks reusability and always drops every instance into the same subnet — no distribution, and that one subnet's IP space slowly exhausts while the others sit empty. Terraform itself is **not a scheduler** — it has no built-in way to say "pick whichever subnet has the most free IPs." Production teams solve this at one of a few different levels, depending on scale.
+
+## Option A — Round-robin across subnets (minimal fix, no architecture change)
+
+Spread instances across **all** public subnets using modulo on `count.index`, instead of always indexing `[0]`:
+
+1. `modules/ec2/variables.tf`: change `subnet_id` (string) → `subnet_ids` (`list(string)`)
+2. `modules/ec2/main.tf`:
+   ```hcl
+   resource "aws_instance" "web" {
+     count     = var.instance_count
+     subnet_id = var.subnet_ids[count.index % length(var.subnet_ids)]
+     ...
+   }
+   ```
+3. Root `main.tf`: pass the whole list, not an index —
+   ```hcl
+   subnet_ids = module.vpc.public_subnet_ids
+   ```
+
+| EC2   | count.index | Subnet    |
+| ----- | ----------: | --------- |
+| ec2-1 |           0 | public-a  |
+| ec2-2 |           1 | public-b  |
+| ec2-3 |           2 | public-a  |
+
+This is the standard fix for a fixed, known set of instances created directly with `count`/`for_each` — no capacity awareness, just even spread.
+
+## Option B — Actually check available IPs and pick the fullest subnet
+
+AWS's `DescribeSubnets` API exposes `AvailableIpAddressCount` per subnet, but Terraform's `aws_subnet` data source can't filter for "max available IPs" in one call — confirmed as a real limitation ([hashicorp/terraform#23781](https://github.com/hashicorp/terraform/issues/23781), [hashicorp/terraform-provider-aws#21038](https://github.com/hashicorp/terraform-provider-aws/issues/21038)). You query every subnet individually and sort in Terraform's own expression language:
+
+```hcl
+data "aws_subnet" "each" {
+  for_each = toset(var.subnet_ids)
+  id       = each.value
+}
+
+locals {
+  sorted_by_free_ips = [
+    for s in reverse(sort([
+      for id, s in data.aws_subnet.each : "${format("%05d", s.available_ip_address_count)}-${id}"
+    ])) : split("-", s)[1]
+  ]
+}
+```
+
+`local.sorted_by_free_ips[0]` is then the subnet with the most free IPs. This is genuine IP-aware placement, but it's rarely hand-rolled — a naive "always pick the fullest" strategy also creates a new problem: every deployment piles onto the same "winning" subnet until it's the one that's suddenly drained (see the "Better Production Logic" section above — filter by a minimum free-IP threshold, then weighted-random or round-robin among the eligible top N, rather than always taking the single best).
+
+## Option C — What production actually does: stop choosing subnets by hand
+
+Neither A nor B is how most real fleets are managed. Teams stop creating individual `aws_instance` resources and hand placement to AWS via an **Auto Scaling Group**, passing *every* eligible subnet:
+
+```hcl
+resource "aws_autoscaling_group" "web" {
+  vpc_zone_identifier = module.vpc.public_subnet_ids
+  min_size            = var.instance_count
+  max_size            = var.instance_count
+  desired_capacity    = var.instance_count
+  launch_template { ... }
+}
+```
+
+ASG's own scheduler balances across AZs/subnets, is capacity-aware, and self-heals — exactly the "check IPs and distribute" behavior described at the top of this section, just implemented by AWS instead of hand-written HCL. The same pattern applies to EKS managed node groups (`subnet_ids = module.vpc.private_subnet_ids`), where the Kubernetes scheduler then places pods on whichever nodes exist.
+
+## Which to use where
+
+| Workload                              | Approach                                          |
+| -------------------------------------- | -------------------------------------------------- |
+| Single EC2 (bastion, Jenkins, GitLab)  | Choose a specific subnet intentionally.            |
+| A handful of EC2s created together (this Q6 exercise) | Round-robin via modulo (**Option A**). |
+| Application server fleets              | Auto Scaling Group with all subnets (**Option C**). |
+| EKS                                    | Pass all subnets to the node group; scheduler places pods. |
+| Large internal platforms               | External placement service reads `DescribeSubnets`, applies policy, returns a subnet ID — Terraform just consumes the result. |
+
+For this lab, **Option A** is the right-sized fix: it directly removes the hardcoded `[0]` with a minimal, self-contained change.
