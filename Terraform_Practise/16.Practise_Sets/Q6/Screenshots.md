@@ -32,3 +32,8 @@ Visual walkthrough of this exercise — a web-tier Security Group module and an 
 ---
 
 ### 5. Destroy Stage
+
+<img width="1897" height="854" alt="image" src="https://github.com/user-attachments/assets/e804828c-b3ac-4738-acdc-fd18be521a76" />
+
+<img width="1885" height="650" alt="image" src="https://github.com/user-attachments/assets/80bfb154-c6fb-4eec-821f-a57421f1b664" />
+
