@@ -125,4 +125,9 @@ $ terraform workspace delete staging
 $ terraform workspace delete prod
 ```
 
-<!-- paste screenshot of destroy output here -->
+
+<img width="1701" height="1044" alt="image" src="https://github.com/user-attachments/assets/15f9e256-d633-4590-8a6a-283a74bf7e42" />
+
+<img width="1701" height="266" alt="image" src="https://github.com/user-attachments/assets/01b4ef3c-ae98-41e9-9e53-c94f5393bbcb" />
+
+
