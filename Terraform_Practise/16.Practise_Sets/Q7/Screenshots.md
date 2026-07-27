@@ -11,8 +11,6 @@ Successfully configured the backend "s3"! Terraform will automatically
 use this backend unless the backend configuration changes.
 ```
 
-<!-- paste screenshot of terraform init output here -->
-
 ---
 
 ### 2. Creating the Workspaces
@@ -37,8 +35,6 @@ $ terraform workspace list
   staging
 ```
 
-<!-- paste screenshot of workspace new / workspace list output here -->
-
 ---
 
 ### 3. Plan — Same Code, Different Workspace, Different `.tfvars`
@@ -51,15 +47,12 @@ $ terraform workspace list
 
 **dev plan** (`terraform plan -var-file="dev.tfvars"`) → `Plan: 1 to add, 0 to change, 0 to destroy.`
 
-<!-- paste screenshot of dev plan output here -->
 
 **staging plan** (`terraform plan -var-file="staging.tfvars"`) → `Plan: 1 to add, 0 to change, 0 to destroy.`
 
-<!-- paste screenshot of staging plan output here -->
 
 **prod plan** (`terraform plan -var-file="prod.tfvars"`) → `Plan: 2 to add, 0 to change, 0 to destroy.` (note `instance_count = 2` → `q7-prod-app-1` and `q7-prod-app-2`)
 
-<!-- paste screenshot of prod plan output here -->
 
 ---
 
@@ -69,18 +62,19 @@ $ terraform workspace list
 $ terraform workspace select dev
 $ terraform apply -var-file="dev.tfvars"
 ...
-aws_instance.app[0]: Creation complete after 12s [id=i-073186c4ea6da993b]
+aws_instance.app[0]: Creation complete after 13s [id=i-059ddcde236019b77]
 
 Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
 ```
 
-<!-- paste screenshot of terraform apply output here -->
+<img width="1815" height="1039" alt="image" src="https://github.com/user-attachments/assets/ebecc906-3d2d-4496-9c44-1d493dd9dfb2" />
 
 ---
 
 ### 5. AWS Console — EC2 Instance(s) Per Environment
 
-<!-- paste screenshot of dev instance (q7-dev-app-1, t2.micro) in EC2 console here -->
+<img width="2557" height="934" alt="image" src="https://github.com/user-attachments/assets/8537e875-44b6-43a9-a91f-3d174826c3ec" />
+
 
 <!-- paste screenshot of staging instance (q7-staging-app-1, t2.small) in EC2 console here, after applying staging -->
 
@@ -106,7 +100,9 @@ env:/staging/Terraform_Practise/16.Practise_Sets/Q7
 env:/prod/Terraform_Practise/16.Practise_Sets/Q7
 ```
 
-<!-- paste screenshot of the S3 bucket showing the separate env:/ state paths here -->
+<img width="2557" height="934" alt="image" src="https://github.com/user-attachments/assets/93fd3c48-d0f2-4e8e-81ae-ad250dca639e" />
+
+<img width="2557" height="934" alt="image" src="https://github.com/user-attachments/assets/778a931d-5147-4674-a192-1f71b8fd5732" />
 
 ---
 
