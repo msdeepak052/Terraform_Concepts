@@ -1317,3 +1317,80 @@ ASG's own scheduler balances across AZs/subnets, is capacity-aware, and self-hea
 | Large internal platforms               | External placement service reads `DescribeSubnets`, applies policy, returns a subnet ID — Terraform just consumes the result. |
 
 For this lab, **Option A** is the right-sized fix: it directly removes the hardcoded `[0]` with a minimal, self-contained change.
+
+---
+
+# Can Python Do the Free-IP Logic Instead? `external` Data Source vs. a Wrapper Script
+
+Both of these are real, valid patterns — but they're two fundamentally different things.
+
+## 1. Terraform's `external` data source — Python runs *inside* the plan
+
+This is a genuine, built-in HashiCorp provider (`hashicorp/external`). Terraform shells out to your script during `terraform plan`, passing a JSON object on stdin, and expects a JSON object back on stdout:
+
+```hcl
+data "external" "best_subnet" {
+  program = ["python3", "${path.module}/choose_subnet.py"]
+}
+
+resource "aws_instance" "web" {
+  subnet_id = data.external.best_subnet.result.subnet_id
+}
+```
+
+**Hard protocol requirements** (confirmed against the provider docs):
+
+* Terraform passes a JSON object on **stdin** (the `query` argument, if set — values are always strings).
+* The script must print a JSON object to **stdout**, and **every value in that object must be a string** — no numbers, booleans, or lists. `{"count": 180}` or `{"tags": ["web"]}` are both invalid. If you need to return something non-string, serialize it yourself: `{"tags": json.dumps(["web"])}`, then `jsondecode()` it back on the HCL side.
+* On success, exit with status `0`. On failure, print a human-readable message to **stderr** (never stdout — that breaks JSON parsing) and exit non-zero.
+
+Example script:
+
+```python
+import boto3, json
+
+ec2 = boto3.client("ec2")
+subnets = ec2.describe_subnets(
+    Filters=[{"Name": "tag:Tier", "Values": ["Public"]}]
+)["Subnets"]
+
+best = max(subnets, key=lambda s: s["AvailableIpAddressCount"])
+
+print(json.dumps({"subnet_id": best["SubnetId"]}))
+```
+
+**Caveats before using this in Q6:**
+
+* The CI image already in use (`hashicorp/terraform:1.10`) has **no Python and no boto3** — you'd need a custom image, or an `apk add python3 py3-pip && pip install boto3` step in `before_script`.
+* HashiCorp documents `external` as a **last-resort** escape hatch: it runs on every plan, can make plans effectively non-deterministic, and needs its own AWS credential resolution (boto3's default chain), separate from — and not guaranteed identical to — the Terraform AWS provider's own auth.
+
+## 2. A wrapper script — Python runs *before* Terraform, outside it entirely
+
+Not a Terraform feature at all — just pipeline design. A Python (or Bash) step runs **before** `terraform plan` in CI, calls `describe_subnets` itself, picks the best subnet, and hands the result to Terraform as a plain input:
+
+```yaml
+# .gitlab-ci.yml, inside tf-plan's script, before the terraform commands:
+- python3 choose_subnet.py > subnet.auto.tfvars.json
+- terraform plan -out=tfplan
+```
+
+```python
+# choose_subnet.py
+import boto3, json
+
+ec2 = boto3.client("ec2")
+subnets = ec2.describe_subnets(Filters=[{"Name": "tag:Tier", "Values": ["Public"]}])["Subnets"]
+best = max(subnets, key=lambda s: s["AvailableIpAddressCount"])
+
+print(json.dumps({"subnet_id": best["SubnetId"]}))
+```
+
+Terraform itself stays completely unaware that any IP-checking logic exists — it just consumes `var.subnet_id` like any other input.
+
+## Which one is "production"?
+
+**Option 2 (the wrapper)** is what most real platform teams actually use — it matches the "external placement service" pattern already described earlier in this doc. It keeps Terraform purely declarative, avoids baking a scripting runtime into the Terraform image just to satisfy the `external` provider, and separates "decide where" (imperative, Python) from "make it so" (declarative, Terraform) — which is easier to test and reason about independently.
+
+**Option 1 (`external` data source)** is real and works, but HashiCorp's own guidance treats it as something to reach for only when there's no other way to get a piece of data into Terraform — not as a routine tool for business/placement logic.
+
+For Q6, if this is ever implemented for real, the wrapper-script approach (Option 2) is the one to use — add it as a `before_script` step in `tf-plan`/`tf-apply` in `.gitlab-ci.yml`, rather than embedding Python inside the module via `external`.
