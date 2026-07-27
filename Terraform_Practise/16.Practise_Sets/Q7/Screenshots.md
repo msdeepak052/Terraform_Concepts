@@ -84,7 +84,8 @@ Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
 
 ### 6. Tags — Confirming `terraform.workspace` Drove the `Environment` Tag
 
-<!-- paste screenshot of the EC2 instance's Tags tab showing Environment = dev / staging / prod here -->
+<img width="2557" height="934" alt="image" src="https://github.com/user-attachments/assets/a5fc3529-1c69-4b12-9c96-8825e1cd5d6e" />
+
 
 ---
 
