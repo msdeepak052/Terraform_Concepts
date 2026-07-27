@@ -136,7 +136,7 @@ The S3 backend requires a `key` (the path/filename for the state object inside t
 
 ```bash
 cd Q7
-terraform init -backend-config="key=Q7/terraform.tfstate"
+terraform init -reconfigure -backend-config="key=Terraform_Practise/16.Practise_Sets/Q7" 
 ```
 
 ## Step 2 — Confirm you're in `default`
