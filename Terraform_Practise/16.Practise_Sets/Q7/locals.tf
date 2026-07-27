@@ -1,6 +1,6 @@
 locals {
   common_tags = {
-    Environment = "Dev"
+    Environment = terraform.workspace
     Owner       = "Platform-Team"
   }
 }
