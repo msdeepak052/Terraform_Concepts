@@ -1,11 +1,8 @@
 # Domain 3 — Core Terraform Workflow
 
-*Official exam objectives covered: 3a (Describe the workflow), 3b (Initialize), 3c (Validate), 3d (Generate/review a plan), 3e (Apply changes), 3f (Destroy), 3g (Formatting/style)*
-*Course lectures folded in: init/validate/plan/apply/destroy/fmt, Terraform Graph, Saving Terraform Plan to File, Terraform Output, Terraform Settings, Load Order & Semantics, Resource Targeting, Dealing with Larger Infrastructure, Comments, Tainting Resources, Terraform Troubleshooting Model, Reporting Terraform Bugs*
+## 1. Terraform Workflow
 
----
-
-## 1. The Terraform Workflow, End to End (Objective 3a)
+The basic Terraform workflow is:
 
 ```mermaid
 flowchart LR
@@ -18,297 +15,1004 @@ flowchart LR
     F -.->|"teardown"| G["terraform destroy"]
 ```
 
-Every Terraform project, from a single EC2 instance to a 500-resource enterprise platform, goes through this exact same loop. Understanding *why* each step exists (not just its name) is what the exam actually tests — so each gets its own section below with multiple examples.
+### What each command does
 
-### What if you skip steps (e.g., go straight from writing code to `apply`, with no `plan` review)?
-Technically `apply` runs its own internal plan and asks for confirmation, so you're never *fully* blind — but a habit of skipping deliberate `plan` review means you're reading the diff for the first time in the same breath as approving it, under time pressure, in a terminal that might scroll past something important. Every real production incident caused by "an unexpected Terraform apply" traces back to not slowing down at the `plan` step.
+| Command              | Purpose                          |
+| -------------------- | -------------------------------- |
+| `terraform init`     | Prepare the working directory    |
+| `terraform validate` | Check configuration syntax/logic |
+| `terraform plan`     | Show what Terraform will change  |
+| `terraform apply`    | Actually make the changes        |
+| `terraform destroy`  | Delete managed infrastructure    |
+| `terraform fmt`      | Format Terraform code            |
+
+### Easy way to remember
+
+**Init → Validate → Plan → Apply**
+
+* **Init** → "Get Terraform ready"
+* **Validate** → "Is my code valid?"
+* **Plan** → "What will change?"
+* **Apply** → "Make the change"
 
 ---
 
-## 2. `terraform init` (Objective 3b)
+# 2. `terraform init`
+
+```bash
+terraform init
+```
 
 ### What it does
-1. Downloads provider plugins listed in `required_providers` (into `.terraform/providers/`).
-2. Downloads/initializes any modules referenced by `module` blocks (into `.terraform/modules/`).
-3. Configures the backend (where state will be stored — local by default, or remote if a `backend` block exists).
-4. Writes/updates `.terraform.lock.hcl` with exact resolved provider versions.
 
-```bash
-terraform init
-```
+`init` prepares a Terraform project for use.
 
-**Example 1 — first run in a brand-new project:**
-```
-Initializing the backend...
-Initializing provider plugins...
-- Finding hashicorp/aws versions matching "~> 5.0"...
-- Installing hashicorp/aws v5.31.0...
-Terraform has been successfully initialized!
-```
+It:
 
-**Example 2 — re-running after adding a new provider to the config:**
+* Downloads required **providers**
+* Downloads required **modules**
+* Initializes/configures the **backend**
+* Creates/updates `.terraform.lock.hcl`
+
+For example:
+
 ```hcl
-# added to required_providers
-random = { source = "hashicorp/random", version = "~> 3.6" }
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
 ```
+
+Running:
+
 ```bash
 terraform init
-# Initializing provider plugins...
-# - Installing hashicorp/random v3.6.0...
 ```
-`init` is **safe to re-run** any time — it's idempotent and only does work if something's actually missing or changed (new provider, new module, changed backend config).
 
-### What if you skip `init` (or delete `.terraform/` and try to `plan` directly)?
+downloads the required AWS provider.
+
+### Important
+
+`terraform init` **does NOT create infrastructure**.
+
+It only prepares Terraform.
+
+### Can you run `init` multiple times?
+
+Yes.
+
+```bash
+terraform init
 ```
-Error: Could not load plugin
-...
-provider registry.terraform.io/hashicorp/aws: no available releases match...
+
+is safe to run again.
+
+For example, if you add:
+
+```hcl
+random = {
+  source  = "hashicorp/random"
+}
 ```
-Every other command depends on the providers/modules `init` sets up — there is no working around it, by design. This is a genuinely required first step, not a formality.
 
-### Real-World Scenario 1 — CI Pipeline Caching
-A CI pipeline that runs `terraform init` fresh on every build wastes minutes redownloading the same provider binaries every single run. Teams cache the `.terraform` directory (keyed on the lock file's hash) between CI runs specifically to skip redundant provider downloads — a very common real-world optimization once Terraform-in-CI scales past a handful of daily runs.
+run `terraform init` again so Terraform downloads the new provider.
 
-### Real-World Scenario 2 — Backend Migration Prompt
-A team changes their `backend "s3" {}` configuration (e.g., pointing at a new bucket after a security review). Running `terraform init` afterward doesn't just silently swap it — it detects the backend config changed and interactively asks "Do you want to migrate existing state to the new backend?" This is `init`'s safety mechanism preventing an accidental, silent loss of state history.
+### Exam takeaway
+
+> **`terraform init` = initialize the working directory and download dependencies.**
 
 ---
 
-## 3. `terraform validate` (Objective 3c)
+# 3. `terraform validate`
 
-### What it does — and, just as importantly, what it does NOT do
 ```bash
 terraform validate
 ```
-Checks HCL syntax and internal logical consistency (correct argument types, required arguments present, valid references) — entirely **offline**, with no AWS API calls and no credentials required.
 
-**Example 1 — a real validate failure (missing required argument):**
+### What it checks
+
+It checks whether your Terraform configuration is structurally valid:
+
+* HCL syntax
+* Required arguments
+* Correct argument types
+* Valid references
+* Internal configuration consistency
+
+Example:
+
 ```hcl
 resource "aws_instance" "web" {
   instance_type = "t3.micro"
-  # missing required "ami" argument
 }
 ```
-```
-Error: Missing required argument
-  on main.tf line 1, in resource "aws_instance" "web":
-The argument "ami" is required, but no definition was found.
-```
 
-**Example 2 — what `validate` will NOT catch:**
+If `ami` is required and missing, `validate` catches it.
+
+### What `validate` does NOT do
+
+It does **not** check whether the real AWS infrastructure is valid.
+
+For example:
+
 ```hcl
 resource "aws_instance" "web" {
-  ami           = "ami-doesnotexist12345"   # syntactically valid string, but this AMI doesn't exist
+  ami           = "ami-doesnotexist12345"
   instance_type = "t3.micro"
 }
 ```
-`terraform validate` passes cleanly here — the string is a syntactically valid AMI ID shape. Only `terraform plan` (which *does* call the AWS API) discovers the AMI doesn't actually exist.
 
-### What if you rely on `validate` alone and skip `plan` before applying?
-You'll catch syntax mistakes but sail straight past anything that requires real-world knowledge — a wrong AMI ID, a CIDR block that overlaps an existing VPC, insufficient IAM permissions. `validate` is a fast, cheap **first** gate (and excellent in CI, since it needs no cloud credentials) — never a substitute for reviewing a real `plan`.
+The configuration can be syntactically valid.
 
----
+So:
 
-## 4. `terraform plan` (Objective 3d)
+```bash
+terraform validate
+```
 
-### What it does
-Computes the difference between desired state (config), last-known state, and (by default) freshly-refreshed real infrastructure — then prints a human-readable diff **without changing anything**.
+may pass.
+
+But:
 
 ```bash
 terraform plan
 ```
-**Example — reading the plan symbols:**
+
+can discover that the AMI doesn't exist.
+
+### Key difference
+
+**Validate:**
+
+> "Is my Terraform code valid?"
+
+**Plan:**
+
+> "Can this configuration actually work against the real infrastructure?"
+
+### Exam takeaway
+
+> `terraform validate` does **not** make cloud API calls.
+
+---
+
+# 4. `terraform plan`
+
+```bash
+terraform plan
 ```
-  # aws_instance.web will be updated in-place
-  ~ resource "aws_instance" "web" {
-        id            = "i-0abc123"
-      ~ instance_type = "t3.micro" -> "t3.small"
-    }
 
-  # aws_security_group.new_sg will be created
-  + resource "aws_security_group" "new_sg" {
-      + id = (known after apply)
-    }
+This is one of the **most important Terraform commands**.
 
-  # aws_eip.old_ip will be destroyed
-  - resource "aws_eip" "old_ip" {
-      - id = "eipalloc-0xyz" -> null
-    }
+It shows what Terraform intends to change **without actually making the changes**.
 
-Plan: 1 to add, 1 to change, 1 to destroy.
+Example:
+
+```hcl
+resource "aws_instance" "web" {
+  ami           = "ami-123"
+  instance_type = "t3.small"
+}
 ```
-| Symbol | Meaning |
-|---|---|
-| `+` | Create |
-| `-` | Destroy |
-| `~` | Update in place |
-| `-/+` | Destroy and recreate (replacement — the resource can't be updated in place, e.g., changing an EC2 instance's AMI) |
 
-### Saving a plan to a file (the production-safe pattern)
+Suppose the existing instance is:
+
+```text
+t3.micro
+```
+
+Terraform may show:
+
+```text
+~ resource "aws_instance" "web" {
+    ~ instance_type = "t3.micro" -> "t3.small"
+}
+```
+
+### Plan symbols
+
+| Symbol | Meaning              |
+| ------ | -------------------- |
+| `+`    | Create               |
+| `-`    | Destroy              |
+| `~`    | Update in-place      |
+| `-/+`  | Destroy and recreate |
+
+### Example
+
+```text
++ aws_security_group.web
+```
+
+→ Create
+
+```text
+~ aws_instance.web
+```
+
+→ Modify existing resource
+
+```text
+- aws_eip.old
+```
+
+→ Delete
+
+```text
+-/+ aws_instance.web
+```
+
+→ Destroy old instance and create a new one
+
+### Why `-/+` matters
+
+Some changes cannot be performed in-place.
+
+For example, changing certain immutable properties may require:
+
+```text
+Destroy old resource
+        ↓
+Create new resource
+```
+
+---
+
+## Save a plan to a file
+
+You can save the exact plan:
+
+```bash
+terraform plan -out=tfplan
+```
+
+Then apply it:
+
+```bash
+terraform apply tfplan
+```
+
+This is especially useful in **CI/CD**.
+
+### Why?
+
+Without a saved plan:
+
+```bash
+terraform plan
+```
+
+then later:
+
+```bash
+terraform apply
+```
+
+`apply` calculates a **new plan**.
+
+But:
+
 ```bash
 terraform plan -out=tfplan
 terraform apply tfplan
 ```
-**Why this matters:** a bare `terraform apply` re-computes its own plan fresh, immediately before applying. If reality changed between when *you* reviewed a plan and when you actually hit "yes," you could be applying something different from what you approved. Saving to a file and applying that *exact* file closes that gap — and it's how CI/CD pipelines with a manual approval gate are built (someone reviews the saved plan's output; a separate `apply` step, possibly hours later, applies precisely that file).
 
-`terraform show tfplan` re-displays a saved plan later (`-json` for machine-readable tooling, e.g., a policy-as-code check reading the plan programmatically).
+means:
 
-### What if you never save plans, and always `apply` fresh?
-For a solo developer on a low-stakes project, this is fine. For a team modifying shared production infrastructure, it means every `apply` re-diffs against a target that could have moved since your last look — you lose the guarantee that "what I reviewed is what gets applied."
+> Review this plan → apply this exact plan.
 
-### Real-World Scenario 1 — A Race Between Two Applies
-Engineer A runs `terraform plan`, reviews it, steps away to grab coffee, and comes back to run `apply` without re-checking. In the meantime, Engineer B applied an unrelated change to the same state. Because A ran a bare `apply` (no saved plan file), Terraform recomputes the plan at apply-time and picks up B's changes into the diff too — potentially surprising A with unrelated modifications bundled into what they thought they'd already reviewed. Using `-out=tfplan` and applying that exact file would have made A's apply fail loudly (stale plan) instead of silently absorbing B's change.
+### View saved plan
 
-### Real-World Scenario 2 — Policy Gate Reading a Plan
-A compliance team wants to block any `apply` that would create a publicly-readable S3 bucket, across dozens of Terraform projects. Using `terraform plan -out=tfplan && terraform show -json tfplan`, a CI script parses the JSON plan output and scans for any `aws_s3_bucket` resource with a public ACL — failing the pipeline before `apply` ever runs, entirely without needing HCP Terraform/Sentinel (though Sentinel, Domain 8, automates this exact pattern natively).
+```bash
+terraform show tfplan
+```
+
+For machine-readable output:
+
+```bash
+terraform show -json tfplan
+```
+
+### Exam takeaway
+
+> `terraform plan` shows proposed changes but does not change infrastructure.
+
+> `terraform plan -out=tfplan` + `terraform apply tfplan` applies the exact saved plan.
 
 ---
 
-## 5. `terraform apply` (Objective 3e)
+# 5. `terraform apply`
 
 ```bash
-terraform apply                 # computes its own plan, asks for confirmation
-terraform apply -auto-approve   # skips confirmation - use ONLY in trusted CI pipelines
-terraform apply tfplan          # applies a previously-saved, already-reviewed plan
+terraform apply
 ```
-**What if you use `-auto-approve` in a human's everyday workflow (not CI)?** You lose the one remaining safety check standing between "I typed a command" and "real infrastructure changed." Reserve `-auto-approve` for automated pipelines where the *plan* was already reviewed by a human at an earlier gate — never as a shortcut to skip thinking about a change.
+
+This actually creates/updates infrastructure.
+
+Typical workflow:
+
+```bash
+terraform plan
+terraform apply
+```
+
+Or simply:
+
+```bash
+terraform apply
+```
+
+Terraform will generate a plan and ask for confirmation.
+
+### `-auto-approve`
+
+```bash
+terraform apply -auto-approve
+```
+
+Skips the confirmation.
+
+Commonly used in automated CI/CD pipelines.
+
+### Applying a saved plan
+
+```bash
+terraform apply tfplan
+```
+
+Applies the previously saved plan.
+
+### Remember
+
+```text
+plan  → tells you what will happen
+apply → actually does it
+```
 
 ---
 
-## 6. `terraform destroy` (Objective 3f)
+# 6. `terraform destroy`
 
 ```bash
-terraform destroy                              # tears down everything tracked in state
-terraform destroy -target=aws_instance.web     # tears down only this resource (+ dependents)
+terraform destroy
 ```
-Reads the state file, computes the reverse-dependency order, and issues delete calls.
 
-**What if you use `-target` as your everyday way to do partial teardown?** HashiCorp explicitly documents `-target` as a break-glass tool for exceptional situations (recovering from a botched apply, isolating a debug session) — not a routine workflow. Habitually targeting specific resources for destroy means other pending changes in the rest of the config go unnoticed and unapplied, creating silent drift between your code and reality that surfaces confusingly later.
+Deletes the infrastructure managed by Terraform.
 
-### `destroy`'s confirmation prompt, and what actually happens when `prevent_destroy` is in the way
-Like `apply`, a bare `terraform destroy` computes its own plan first and shows exactly what will be deleted before asking `Do you really want to destroy all resources?` — read this the same way you'd read an apply plan, not as a rubber-stamp prompt to click through. If any resource in scope has `lifecycle { prevent_destroy = true }` (Domain 4c), the destroy **fails outright** for that resource with `Error: Instance cannot be destroyed` — Terraform refuses to proceed rather than silently skipping the protected resource and destroying everything else, so a `prevent_destroy`-guarded resource must have its lifecycle block explicitly removed (a deliberate, reviewable code change) before it can ever be torn down.
+Example:
 
-### Real-World Scenario 1 — Nightly Cost Savings
-A company destroys its entire QA environment every night (`terraform destroy` against the QA workspace) and recreates it every morning (`terraform apply`), specifically to avoid paying for idle EC2/RDS resources overnight. This only works safely because the *whole* environment is defined in Terraform — nothing is "hand-added" outside of it that would be silently lost on destroy.
+```text
+EC2
+Security Group
+EBS
+Elastic IP
+```
 
-### Real-World Scenario 2 — Destroying Against the Wrong Workspace
-An engineer means to tear down a personal `dev` sandbox but forgets they left their terminal on the `staging` workspace from an earlier debugging session (`terraform workspace show` would have revealed this, but they didn't check). `terraform destroy` computes its plan against `staging`'s state and lists every staging resource for deletion. Because the plan output is shown before the confirmation prompt, the engineer notices resources they don't recognize as "theirs" and aborts — but only because they actually read the plan instead of typing `yes` on reflex. This is the concrete, everyday reason the destroy confirmation prompt (and workspace-aware backend naming, Domain 6) exists: the tool gives you one last chance to notice you're pointed at the wrong target before anything real is deleted.
+Terraform determines the correct dependency order and deletes them.
 
----
+### Important
 
-## 7. `terraform fmt` (Objective 3g)
+`destroy` normally shows a plan first and asks for confirmation.
+
+This is important because you get a chance to notice:
+
+> "Wait, this is deleting my production resources!"
+
+### Targeting a resource
 
 ```bash
-terraform fmt              # rewrites files to canonical style (indentation/alignment) in place
-terraform fmt -check       # CI-friendly: exits non-zero if formatting is needed, without rewriting
-terraform fmt -recursive   # format every .tf file in subdirectories too
+terraform destroy -target=aws_instance.web
 ```
-**Example — before and after:**
+
+This focuses the operation on that resource and its dependencies.
+
+⚠️ **Don't use `-target` as your normal workflow.**
+
+It's mainly useful for exceptional/debugging/recovery situations.
+
+### `prevent_destroy`
+
+If a resource has:
+
 ```hcl
-# before
-resource "aws_instance" "web" {
-ami = "ami-0e35ddab05955cf57"
-    instance_type="t3.micro"
+lifecycle {
+  prevent_destroy = true
 }
 ```
+
+Terraform will refuse to destroy it.
+
+---
+
+# 7. `terraform fmt`
+
+Terraform provides a standard formatting command:
+
+```bash
+terraform fmt
+```
+
+Example:
+
+### Before
+
 ```hcl
-# after `terraform fmt`
 resource "aws_instance" "web" {
-  ami           = "ami-0e35ddab05955cf57"
+ami = "ami-123"
+instance_type="t3.micro"
+}
+```
+
+### After
+
+```hcl
+resource "aws_instance" "web" {
+  ami           = "ami-123"
   instance_type = "t3.micro"
 }
 ```
-**What if you skip `fmt` and every teammate uses their own indentation style?** Every pull request becomes noisy with whitespace-only diffs mixed into real changes, making actual logic changes harder to review. `terraform fmt -check` as a CI gate (failing a PR that isn't formatted) is the standard fix — cheap to add, permanently removes an entire category of review noise.
+
+### Useful options
+
+```bash
+terraform fmt
+```
+
+Format files.
+
+```bash
+terraform fmt -recursive
+```
+
+Format `.tf` files in subdirectories too.
+
+```bash
+terraform fmt -check
+```
+
+Check formatting without modifying files.
+
+Very useful in CI:
+
+```text
+Pull Request
+     ↓
+terraform fmt -check
+     ↓
+Fail if formatting is incorrect
+```
+
+### Exam takeaway
+
+> `terraform fmt` = automatically formats Terraform configuration.
 
 ---
 
-## 8. Supporting Workflow Commands & Concepts
+# 8. `terraform graph`
 
-### `terraform graph`
 ```bash
-terraform graph | dot -Tsvg > graph.svg   # requires Graphviz's `dot`
-```
-Emits the internal dependency graph in DOT format. **Use case:** a 100+ resource config applies in an order you don't expect — visualizing the graph shows exactly which reference is forcing that ordering, faster than reading through every resource block manually.
-
-### `terraform output`
-```bash
-terraform output                    # all outputs
-terraform output instance_public_ip # one specific output
-terraform output -json              # machine-readable, for scripting/CI
+terraform graph
 ```
 
-### The `terraform {}` Settings Block
+Shows Terraform's **dependency graph**.
+
+For example:
+
+```text
+VPC
+ ↓
+Subnet
+ ↓
+EC2
+ ↓
+Application
+```
+
+Terraform uses dependencies to determine the correct order of operations.
+
+You can generate a visual graph with Graphviz:
+
+```bash
+terraform graph | dot -Tsvg > graph.svg
+```
+
+### Exam idea
+
+Terraform does **not** simply execute resources from top to bottom.
+
+It uses the **dependency graph**.
+
+---
+
+# 9. `terraform output`
+
+If you define:
+
 ```hcl
-terraform {
-  required_version = ">= 1.7.0"     # pins the Terraform CLI itself
-  required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 5.0" }
-  }
-  backend "s3" { ... }              # full detail in Domain 6
+output "instance_public_ip" {
+  value = aws_instance.web.public_ip
 }
 ```
-`required_version` guards against a teammate running an incompatible **Terraform CLI** version — a separate concern from `required_providers`, which pins the **plugin** version.
 
-### Load Order & Semantics
-Terraform loads **every** `.tf` file in a directory as if it were one combined file — `main.tf`/`variables.tf`/`outputs.tf` naming is a human convention Terraform itself ignores. Declaration order (inside or across files) doesn't matter either; Terraform builds its execution order purely from the dependency graph (attribute references), never from top-to-bottom read order. The one real exception is `.tfvars` file load order, which *does* matter for variable value precedence (Domain 4a).
+You can retrieve it:
 
-### Resource Targeting
+```bash
+terraform output
+```
+
+Get one output:
+
+```bash
+terraform output instance_public_ip
+```
+
+Machine-readable:
+
+```bash
+terraform output -json
+```
+
+### Remember
+
+> `terraform output` reads values defined in Terraform `output` blocks.
+
+---
+
+# 10. `terraform {}` Settings Block
+
+The `terraform {}` block controls Terraform-level settings.
+
+Example:
+
+```hcl
+terraform {
+  required_version = ">= 1.7.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+
+  backend "s3" {
+    # backend configuration
+  }
+}
+```
+
+### Important distinction
+
+There are **two different version constraints** here:
+
+```hcl
+required_version = ">= 1.7.0"
+```
+
+→ Terraform **CLI version**
+
+Whereas:
+
+```hcl
+required_providers {
+  aws = {
+    version = "~> 5.0"
+  }
+}
+```
+
+→ AWS **provider version**
+
+### Exam trap
+
+**Terraform version ≠ Provider version**
+
+---
+
+# 11. How Terraform Loads `.tf` Files
+
+Suppose your directory contains:
+
+```text
+main.tf
+variables.tf
+outputs.tf
+network.tf
+security.tf
+```
+
+Terraform effectively treats them as **one configuration**.
+
+You don't need to worry about:
+
+```text
+main.tf executes first
+variables.tf executes second
+...
+```
+
+That's not how Terraform works.
+
+Terraform looks at the **dependency graph**.
+
+### Example
+
+Even if this appears in `security.tf`:
+
+```hcl
+resource "aws_security_group" "web" {
+  ...
+}
+```
+
+and this appears in `main.tf`:
+
+```hcl
+resource "aws_instance" "web" {
+  vpc_security_group_ids = [
+    aws_security_group.web.id
+  ]
+}
+```
+
+Terraform understands:
+
+```text
+Security Group
+      ↓
+     EC2
+```
+
+because of the reference:
+
+```hcl
+aws_security_group.web.id
+```
+
+### Exam takeaway
+
+> Terraform loads all `.tf` files in the directory together. File names and declaration order don't determine execution order.
+
+---
+
+# 12. Resource Targeting
+
+You can target a specific resource:
+
 ```bash
 terraform plan -target=aws_instance.web
+```
+
+or:
+
+```bash
 terraform apply -target=module.vpc
 ```
-Restricts an operation to one resource/module plus its dependencies. Same break-glass caveat as `destroy -target` above — a debugging/recovery tool, not a routine workflow habit.
 
-### Dealing with Larger Infrastructure
-As a config grows past what one team can safely reason about in a single `plan`, the real fixes are: split into **modules** by concern (Domain 5), split **state** per environment/project (Domain 6/7's `terraform_remote_state`), and use `-target` only as a temporary escape hatch — never as the primary scaling strategy.
+This tells Terraform:
 
-### Tainting Resources
+> Focus this operation on this resource/module and its dependencies.
+
+### Important
+
+`-target` is **not recommended for normal workflows**.
+
+Use it mainly for:
+
+* Debugging
+* Recovery
+* Exceptional situations
+
+Don't use:
+
 ```bash
-terraform apply -replace="aws_instance.web"   # modern syntax
-terraform taint aws_instance.web              # legacy standalone command, still exam-tested
+terraform apply -target=...
 ```
-Forces destroy + recreate on the next apply with **no config change** — useful when a resource is "broken" in a way Terraform's normal diff can't detect (a corrupted instance, failed boot).
 
-### Comments
+as your normal way of managing infrastructure.
+
+---
+
+# 13. Larger Infrastructure
+
+As infrastructure becomes larger, don't solve complexity by constantly using:
+
+```bash
+-target
+```
+
+Instead:
+
+### Use modules
+
+```text
+Terraform
+   │
+   ├── VPC module
+   ├── EKS module
+   ├── Database module
+   └── Monitoring module
+```
+
+### Split state appropriately
+
+For example:
+
+```text
+dev state
+staging state
+prod state
+```
+
+This keeps plans smaller and reduces the blast radius.
+
+### Remember
+
+> **Modules + properly scoped state** are the normal scaling strategy.
+
+`-target` is the emergency tool.
+
+---
+
+# 14. Replacing a Resource
+
+Sometimes Terraform needs to recreate a resource even though the configuration hasn't changed.
+
+Modern command:
+
+```bash
+terraform apply -replace="aws_instance.web"
+```
+
+This forces:
+
+```text
+Destroy
+   ↓
+Create
+```
+
+for that resource.
+
+### Example use case
+
+An EC2 instance is corrupted or behaving incorrectly, but Terraform sees no configuration difference.
+
+You can force replacement:
+
+```bash
+terraform apply -replace="aws_instance.web"
+```
+
+### Older command
+
+You may also see:
+
+```bash
+terraform taint aws_instance.web
+```
+
+This is the **legacy** approach.
+
+For exam purposes, know that `taint` forces a resource to be recreated, but the modern approach is:
+
+```bash
+terraform apply -replace="..."
+```
+
+---
+
+# 15. Terraform Comments
+
+Terraform supports:
+
+### Single-line
+
 ```hcl
-# preferred single-line style
-// also valid
-/* block
-   comment */
+# This creates the web server
 ```
-No functional difference; `#` is HashiCorp's style convention (and what `terraform fmt`-adjacent tooling/generators default to). `fmt` normalizes whitespace/alignment, not comment style — it will not rewrite `//` to `#` for you.
 
-**What if a team mixes all three styles inconsistently?** Nothing breaks functionally — but a mixed style is a small, constant tax on code review (is `//` here a stylistic choice or a leftover from a generated/copy-pasted block?) and is exactly the kind of thing worth putting in a one-line team convention doc rather than re-litigating in every PR. A common real convention: `#` for genuinely hand-written comments, `//`/`/* */` reserved for anything emitted by a code generator (so a quick `grep` can distinguish "a human wrote this note" from "a tool produced this").
+Also:
 
-### Terraform Troubleshooting Model
-A methodical order, not a single command: (1) read the full error message — it usually names the exact resource/argument; (2) run `terraform validate` to rule out syntax issues; (3) check provider version pinning; (4) escalate to `TF_LOG` verbose logging (Domain 7) if still opaque; (5) only then consider it a genuine provider bug.
+```hcl
+// This creates the web server
+```
 
-**Worked example:** `terraform apply` fails with `Error: creating EC2 Instance: UnauthorizedOperation`. Step 1 (read the message) already tells you this isn't a syntax problem — it's an AWS authorization failure. Step 2 (`validate`) would pass cleanly, confirming the config itself is fine. Step 3 (provider pinning) is irrelevant here — the error is about IAM, not a provider version mismatch. The actual fix is checking the IAM policy attached to whatever identity is running Terraform, not digging through TF_LOG output or filing a provider bug — recognizing *which* step in the model actually applies to a given error, rather than mechanically running through all five every time, is the real skill being tested.
+### Multi-line
 
-**What if you skip straight to `TF_LOG` verbose logging for every error, including simple ones?** You'll drown a five-second fix (a missing required argument, an obvious IAM message) in megabytes of trace output that took longer to read than the error message itself would have. Reserve `TF_LOG` for genuinely opaque failures — provider-internal errors with no clear resource/argument named, or behavior that contradicts what the plan predicted.
+```hcl
+/*
+  This is a
+  multi-line comment
+*/
+```
 
-### Reporting Terraform Bugs
-Confirmed bugs almost always belong on the **provider's** own GitHub repo (e.g., `hashicorp/terraform-provider-aws/issues`), not Terraform Core's — unless the bug is in HCL parsing or state handling itself. Include Terraform version, provider version, a minimal reproducing config, and relevant log output.
+For normal Terraform style, `#` is commonly preferred.
 
-**What if you report a provider-specific bug to the wrong repository** (Terraform Core instead of `terraform-provider-aws`)? At best it sits untriaged until someone notices and redirects it; at worst it's closed as "wrong repo" with no further action, and the actual maintainers who could fix it never see it. Since Core and each provider are separately maintained projects (Section 1 of this file), knowing which one owns your specific symptom is part of getting a bug looked at at all, not just a formality.
+Comments don't affect Terraform execution.
+
+---
+
+# 16. Terraform Troubleshooting
+
+When Terraform fails, don't immediately jump to complicated debugging.
+
+Use a simple approach:
+
+### Step 1 — Read the error
+
+Terraform often tells you exactly what went wrong.
+
+### Step 2 — Check configuration
+
+```bash
+terraform validate
+```
+
+### Step 3 — Check provider/version issues
+
+Look at:
+
+```text
+required_providers
+.terraform.lock.hcl
+```
+
+### Step 4 — Use verbose logging if necessary
+
+```bash
+TF_LOG=DEBUG terraform apply
+```
+
+Only use this when the normal error message isn't enough.
+
+### Example
+
+If you get:
+
+```text
+Error: UnauthorizedOperation
+```
+
+on EC2 creation, the likely issue is:
+
+```text
+IAM permissions
+```
+
+Not:
+
+```text
+Terraform syntax
+```
+
+So don't waste time debugging HCL if the error clearly indicates AWS authorization.
 
 ---
 
-## 9. Practice Questions
+# 17. Reporting Terraform Bugs
 
-### Easy
-1. Which command must succeed before `plan` or `apply` will work in a brand-new directory?
-2. Does `terraform validate` make any real API calls?
-3. What symbol in a `plan` output means "destroy and recreate," as opposed to a simple in-place update?
+If you confirm a provider-specific bug, report it to the **provider's repository**, not automatically to Terraform Core.
 
-### Medium
-4. Write the two-command sequence that guarantees you apply the *exact* plan you reviewed, even if the real infrastructure changes in between.
-5. A CI pipeline runs `terraform fmt -check` as a required gate. Explain what problem this specifically prevents in code review.
-6. Explain why `terraform validate` can pass on a config referencing a nonexistent AMI ID, while `terraform plan` on the same config fails.
+For example:
 
-### Hard
-7. Design a CI policy check using `terraform show -json` on a saved plan file that blocks any `apply` creating a publicly-readable S3 bucket — describe the pipeline steps in order.
-8. A team habitually uses `terraform destroy -target=X` for routine cleanup instead of maintaining properly scoped configs. Describe two concrete ways this creates silent drift, and what happens when a later, untargeted `apply` runs against the same config.
+```text
+Terraform Core
+      │
+      └── Terraform/provider logic
+
+AWS Provider
+      │
+      └── AWS-specific functionality
+```
+
+### When reporting a bug, provide:
+
+* Terraform version
+* Provider version
+* Minimal Terraform configuration reproducing the problem
+* Relevant error/log output
+
+### Exam idea
+
+> Know whether the problem belongs to Terraform Core or a provider.
 
 ---
-**Next:** [04-domain4a-resources-variables-types.md](04-domain4a-resources-variables-types.md)
+
+# 18. Commands You Should Know for the Exam
+
+| Command                         | What to remember                               |
+| ------------------------------- | ---------------------------------------------- |
+| `terraform init`                | Initialize project, download providers/modules |
+| `terraform validate`            | Validate configuration                         |
+| `terraform plan`                | Preview changes                                |
+| `terraform plan -out=tfplan`    | Save exact plan                                |
+| `terraform show tfplan`         | Display saved plan                             |
+| `terraform apply`               | Apply changes                                  |
+| `terraform apply tfplan`        | Apply saved plan                               |
+| `terraform apply -auto-approve` | Apply without confirmation                     |
+| `terraform destroy`             | Destroy managed infrastructure                 |
+| `terraform fmt`                 | Format configuration                           |
+| `terraform fmt -check`          | Check formatting                               |
+| `terraform graph`               | Show dependency graph                          |
+| `terraform output`              | Display outputs                                |
+| `terraform apply -replace=...`  | Force resource replacement                     |
+| `terraform taint`               | Legacy way to mark resource for replacement    |
+| `terraform plan -target=...`    | Target resource/module — exceptional use       |
+
+---
+
+# 19. Most Important Exam Concepts
+
+### `init`
+
+> **Prepare Terraform**
+
+Downloads providers/modules, initializes backend, handles lock file.
+
+### `validate`
+
+> **Is my Terraform configuration valid?**
+
+No real infrastructure/API validation.
+
+### `plan`
+
+> **What is Terraform going to change?**
+
+Doesn't modify infrastructure.
+
+### `apply`
+
+> **Make the changes**
+
+Creates/updates infrastructure.
+
+### `destroy`
+
+> **Delete managed infrastructure**
+
+Shows a destruction plan and asks for confirmation.
+
+### `fmt`
+
+> **Format Terraform code**
+
+---
+
+# 20. One Mental Model for Domain 3
+
+```mermaid
+flowchart TD
+    A["Write .tf files"] --> B["terraform init"]
+    B --> C["terraform validate"]
+    C --> D["terraform plan"]
+    D --> E{"Review changes"}
+    E -->|"Looks good"| F["terraform apply"]
+    E -->|"Not correct"| A
+    F --> G["Infrastructure + State"]
+    G -->|"Configuration changes"| D
+    G -->|"Need teardown"| H["terraform destroy"]
+```
+
+## Final memory trick
+
+**`init` → Prepare**
+
+**`validate` → Check code**
+
+**`plan` → Preview**
+
+**`apply` → Create/change**
+
+**`destroy` → Delete**
+
+**`fmt` → Format**
+
+And the **big exam distinction**:
+
+> **`validate` checks Terraform configuration. `plan` checks the proposed real-world changes. `apply` actually changes infrastructure.** 
