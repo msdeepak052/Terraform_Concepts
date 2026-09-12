@@ -1,104 +1,412 @@
 # Domain 1 — Infrastructure as Code (IaC) Concepts
 
-*Official exam objectives covered: 1a (What is IaC), 1b (Advantages of IaC patterns), 1c (Multi-cloud/hybrid/service-agnostic workflows)*
-*Course lectures folded in: Installation (Windows/Linux), IDE setup + VS Code extensions, AWS account opening/sign-in/MFA, Authentication vs Authorization, IAM user creation*
+## 1. What is Infrastructure as Code?
 
----
+### Core idea
 
-## 1. What Is Infrastructure as Code? (Objective 1a)
+* **IaC = managing infrastructure using code instead of manually creating it.**
+* Infrastructure can include:
 
-### Definition
-Infrastructure as Code is the practice of managing and provisioning infrastructure (servers, networks, load balancers, databases, DNS records — anything with an API) through **machine-readable configuration files**, instead of manual processes like clicking through a cloud console or running one-off CLI commands.
+  * EC2
+  * VPC
+  * Subnets
+  * Load Balancers
+  * S3
+  * Databases
+  * DNS
+* Terraform uses **declarative configuration**.
 
-There are two philosophies of IaC, and Terraform is firmly in the second camp:
+### Imperative vs Declarative
 
-| | Imperative | Declarative |
-|---|---|---|
-| You write | *Steps* to reach a goal ("create a VPC, then a subnet, then attach it...") | The *end state* you want ("I want a VPC with these subnets") |
-| Execution engine decides | Nothing — you control every step | The order of operations, based on a dependency graph |
-| Example tools | Bash scripts, Python + boto3, Ansible (mostly) | **Terraform**, AWS CloudFormation, Pulumi (can do both) |
-| Re-running the same script | Might create duplicates, or need custom "if exists, skip" logic you write yourself | Terraform automatically diffs desired vs. current and only changes what's different |
+* **Imperative → tell the system HOW to do something**
+* **Declarative → tell the system WHAT you want**
 
-**Example — imperative (what you'd otherwise write by hand):**
+### Example
+
+**Imperative:**
+
 ```bash
-#!/bin/bash
-aws ec2 run-instances --image-id ami-0e35ddab05955cf57 --instance-type t3.micro \
-  --key-name lappynewawss --subnet-id subnet-0abc123
-# Problem: run this script twice, you get TWO instances.
-# You'd have to hand-write logic to check "does this instance already exist?"
+aws ec2 run-instances ...
 ```
 
-**Example — declarative (Terraform):**
+You are basically saying:
+
+> "Run this command and create an EC2 instance."
+
+If you run it twice, you might create two instances.
+
+**Declarative — Terraform:**
+
 ```hcl
 resource "aws_instance" "web" {
-  ami           = "ami-0e35ddab05955cf57"
+  ami           = "ami-123"
   instance_type = "t3.micro"
-  key_name      = "lappynewawss"
-  subnet_id     = "subnet-0abc123"
 }
 ```
-Run `terraform apply` on this ten times in a row — you still get exactly **one** instance, because Terraform checks its state file first and sees the instance already exists. This property is called **idempotency**, and it's the single biggest reason declarative IaC beats hand-written scripts at any real scale.
 
-### What if you don't use IaC at all?
-This is worth sitting with, because it's the "why" behind everything else in this course:
-- **No audit trail.** If someone clicks "Terminate Instance" in the AWS Console, there's a CloudTrail log entry buried in thousands of others — not a Git diff you can review in a pull request.
-- **No repeatability.** Rebuilding "the same environment" in a second AWS region means a human remembering (or re-discovering) every setting that was clicked into place the first time.
-- **Configuration drift becomes invisible.** Two "identical" servers built by hand six months apart almost never actually match — one has a patch the other doesn't, a slightly different security group rule, etc. Nobody notices until something breaks in only one of them.
-- **Scaling is linear in human effort.** Need 50 identical microservice environments for a multi-tenant SaaS product? By hand, that's 50x the clicking, 50x the chance of a mistake. With Terraform + modules, it's the same module called 50 times with different variables.
+You are saying:
 
-### Real-World Scenario 1 — Disaster Recovery
-A company's entire production environment (VPC, EC2 fleet, RDS database, load balancer) lives only as manually-clicked AWS Console configuration. The primary AWS region has an outage. Without IaC, the team's disaster recovery plan is "hope someone remembers how everything was configured" — realistically, hours-to-days of manual reconstruction, if it's even fully possible. With the same environment defined in Terraform, disaster recovery is `terraform apply` pointed at a different region's variables file — infrastructure back online in minutes, not days.
+> "I want an EC2 instance with these properties."
 
-### Real-World Scenario 2 — Onboarding a New Environment for a New Client
-A B2B SaaS company needs to spin up an isolated environment (VPC + app servers + database) for every new enterprise client, for compliance/data-isolation reasons. Without IaC, onboarding a new client means a DevOps engineer manually repeating ~40 console steps, taking half a day and risking a missed step (e.g., forgetting to enable encryption on one client's database, an actual audit finding). With Terraform modules, onboarding a new client is: `terraform apply -var="client_name=acme-corp"` — same guaranteed-correct infrastructure shape every time, in minutes.
+Terraform checks what already exists and determines what needs to change.
 
----
+### Important term: Idempotency
 
-## 2. Advantages of IaC Patterns (Objective 1b)
+* **Idempotent = running the same Terraform configuration repeatedly produces the same desired result.**
+* If the EC2 instance already exists, Terraform doesn't create another one just because you run `apply` again.
 
-| Advantage | What it actually means in practice |
-|---|---|
-| **Version control** | Your entire infrastructure history lives in Git — `git blame` tells you who changed a security group rule and when, `git revert` can undo an infra change like it undoes a code change. |
-| **Collaboration** | Infrastructure changes go through pull requests, code review, and CI checks — the same rigor as application code, instead of one person's tribal knowledge. |
-| **Consistency (no configuration drift)** | Every environment built from the same `.tf` code is guaranteed structurally identical — no "well it works in staging" mysteries caused by an undocumented manual tweak. |
-| **Speed / self-service** | A developer can spin up a fully-configured dev environment in minutes via `terraform apply`, instead of filing a ticket and waiting for an ops engineer. |
-| **Cost management** | Since environments are defined as code, it's trivial to spin them down completely (`terraform destroy`) when not needed — e.g., destroying an entire QA environment every night and recreating it every morning. |
-| **Documentation that can't go stale** | The `.tf` files *are* the documentation of what's running — unlike a wiki page describing infrastructure, which is right the day it's written and wrong six months later. |
+### Simple example
 
-### What if you skip these advantages (i.e., stick with manual/imperative management)?
-You don't just lose one nice-to-have — these compound. No version control means no easy rollback, which means outages last longer. No consistency means more time debugging environment-specific bugs that shouldn't exist. No self-service means ops becomes a bottleneck for every team that needs infrastructure. Individually survivable; together, they're why "ClickOps" doesn't scale past a small team and a handful of servers.
+```text
+First apply:
+Terraform → EC2 doesn't exist → CREATE EC2
 
----
+Second apply:
+Terraform → EC2 already exists → NO CHANGE
 
-## 3. How Terraform Manages Multi-Cloud, Hybrid Cloud, and Service-Agnostic Workflows (Objective 1c)
-
-### The core idea: Terraform Core knows *nothing* about AWS, Azure, GCP, GitHub, or Kubernetes
-All of that platform-specific knowledge lives in **provider plugins**, downloaded separately during `terraform init`. Terraform Core's job is only: read `.tf` files, build a dependency graph, manage state, and call whichever provider plugin owns a given resource type.
-
-```mermaid
-flowchart TD
-    Core["Terraform Core\n(plan/apply engine, state management,\nHCL parsing - cloud-agnostic)"]
-    Core --> AWS["aws provider plugin"]
-    Core --> GH["github provider plugin"]
-    Core --> K8s["kubernetes provider plugin"]
-    Core --> Vault["vault provider plugin"]
-    AWS --> AWSAPI["AWS API"]
-    GH --> GHAPI["GitHub API"]
-    K8s --> K8sAPI["Kubernetes API"]
-    Vault --> VaultAPI["Vault API"]
+Third apply:
+Terraform → EC2 already exists → NO CHANGE
 ```
 
-This is *why* one tool can manage an EC2 instance, a GitHub repository, a Kubernetes deployment, and a Vault secret in the same `apply` — each resource type is handled by its own provider, but they all share one state file, one workflow, one language (HCL).
+### Why IaC?
 
-### Example — one config, two providers, working together
+Without IaC:
+
+* Manual configuration is difficult to reproduce.
+* Different environments can become different over time.
+* Infrastructure changes are harder to track.
+* Scaling requires more manual work.
+
+With IaC:
+
+* Infrastructure can be recreated.
+* Changes can be tracked in Git.
+* Environments can be consistent.
+* Infrastructure can be created quickly.
+
+### Example
+
+Suppose you manually create:
+
+```text
+VPC
+ ├── 2 Subnets
+ ├── Internet Gateway
+ ├── Route Table
+ ├── Security Group
+ └── EC2
+```
+
+Now your company wants the **same environment in another AWS region**.
+
+Manual approach:
+
+> Repeat all the steps.
+
+Terraform:
+
+> Use the same Terraform configuration with different variables.
+
+### Exam takeaway
+
+> **IaC manages infrastructure through machine-readable configuration instead of manual processes. Terraform is primarily declarative and idempotent.**
+
+---
+
+# 2. Advantages of IaC
+
+You don't need to memorize a huge list. Understand these **six important benefits**.
+
+## 2.1 Version Control
+
+* Terraform files can be stored in Git.
+* You can see:
+
+  * Who changed infrastructure
+  * What changed
+  * When it changed
+* You can review changes through Pull Requests.
+
+### Example
+
+Someone changes:
+
 ```hcl
-terraform {
-  required_providers {
-    aws    = { source = "hashicorp/aws", version = "~> 5.0" }
-    github = { source = "integrations/github", version = "~> 6.0" }
-  }
+ingress {
+  from_port = 22
 }
+```
 
+Git shows exactly what changed.
+
+You can also revert the change.
+
+### Remember
+
+> **Infrastructure becomes version-controlled just like application code.**
+
+---
+
+## 2.2 Consistency
+
+* The same Terraform code can create multiple environments.
+* This reduces configuration drift.
+
+### Example
+
+You have:
+
+```text
+Development
+Staging
+Production
+```
+
+All are created from the same Terraform module.
+
+Therefore, you don't depend on someone remembering:
+
+> "I think production had this security group rule..."
+
+### Remember
+
+> **Same code → consistent infrastructure.**
+
+---
+
+## 2.3 Collaboration
+
+Instead of:
+
+```text
+Engineer → AWS Console → Change something
+```
+
+you can have:
+
+```text
+Engineer
+   ↓
+Terraform code
+   ↓
+Git
+   ↓
+Pull Request
+   ↓
+Code Review
+   ↓
+Apply
+```
+
+This makes infrastructure changes easier to review.
+
+---
+
+## 2.4 Speed / Self-Service
+
+Without IaC:
+
+```text
+Developer → Raise ticket
+          ↓
+       DevOps
+          ↓
+       Create EC2
+          ↓
+       Configure it
+```
+
+With Terraform:
+
+```text
+Developer
+    ↓
+terraform apply
+    ↓
+Environment created
+```
+
+### Remember
+
+> IaC reduces manual operational work and can enable self-service infrastructure.
+
+---
+
+## 2.5 Cost Management
+
+Terraform can create and destroy environments easily.
+
+Example:
+
+```bash
+terraform apply
+```
+
+Create QA environment.
+
+At night:
+
+```bash
+terraform destroy
+```
+
+Remove it.
+
+Next morning:
+
+```bash
+terraform apply
+```
+
+Create it again.
+
+Useful for temporary environments.
+
+---
+
+## 2.6 Documentation
+
+Your Terraform code describes the infrastructure.
+
+Instead of documentation saying:
+
+> "Production has 3 EC2 instances."
+
+Terraform actually defines:
+
+```hcl
+resource "aws_instance" "web" {
+  count = 3
+}
+```
+
+The code is much less likely to become stale than manually maintained documentation.
+
+### Exam takeaway
+
+The major IaC benefits to remember:
+
+> **Version control + Consistency + Collaboration + Speed + Cost control + Documentation**
+
+---
+
+# 3. Terraform and Multi-Cloud
+
+This is the important concept:
+
+> **Terraform Core itself does not know how to create AWS, Azure, GCP, GitHub, etc. resources.**
+
+Terraform uses **providers**.
+
+### Think of it like this
+
+```text
+                Terraform Core
+                     |
+        +------------+------------+
+        |            |            |
+       AWS         Azure        GitHub
+    Provider      Provider      Provider
+        |            |            |
+      AWS API      Azure API    GitHub API
+```
+
+### Terraform Core handles
+
+* Reading Terraform configuration
+* Building dependency graph
+* Planning
+* State management
+* Deciding what needs to change
+
+### Provider handles
+
+> "How do I actually communicate with this platform?"
+
+For example:
+
+```text
+Terraform
+   ↓
+AWS Provider
+   ↓
+AWS API
+   ↓
+EC2
+```
+
+---
+
+# 4. What is a Provider?
+
+A provider is essentially a **plugin that allows Terraform to communicate with a platform/service**.
+
+Examples:
+
+```text
+hashicorp/aws
+hashicorp/azurerm
+hashicorp/google
+hashicorp/kubernetes
+integrations/github
+```
+
+### Example
+
+```hcl
+provider "aws" {
+  region = "ap-south-1"
+}
+```
+
+This tells Terraform:
+
+> Use the AWS provider and work with the Mumbai region.
+
+Then:
+
+```hcl
+resource "aws_instance" "web" {
+  ami           = "ami-123"
+  instance_type = "t3.micro"
+}
+```
+
+Terraform doesn't itself know how to call the EC2 API.
+
+The AWS provider handles that.
+
+---
+
+# 5. Multi-Cloud Example
+
+You can have multiple providers in the same Terraform project.
+
+```text
+Terraform
+   |
+   +---- AWS Provider
+   |       ↓
+   |      AWS
+   |
+   +---- GitHub Provider
+           ↓
+         GitHub
+```
+
+One Terraform configuration can therefore manage:
+
+```text
+AWS VPC
+AWS EC2
+GitHub Repository
+Kubernetes Deployment
+Vault configuration
+```
+
+### Example
+
+```hcl
 provider "aws" {
   region = "ap-south-1"
 }
@@ -106,352 +414,278 @@ provider "aws" {
 provider "github" {
   token = var.github_token
 }
-
-resource "aws_instance" "ci_runner" {
-  ami           = data.aws_ami.amazon_linux.id
-  instance_type = "t3.medium"
-}
-
-resource "github_repository" "app_repo" {
-  name       = "my-app"
-  visibility = "private"
-}
-
-output "runner_ip" {
-  value = aws_instance.ci_runner.public_ip
-}
 ```
-Notice: a single `terraform apply` provisions both a real EC2 instance *and* a real GitHub repository, in one dependency-ordered run, tracked in one state file. This is the literal mechanism behind "hybrid cloud" and "multi-cloud" support — it's not a special mode you switch on, it's just what happens naturally when a config declares more than one provider.
 
-### Multi-account / multi-region as a "hybrid" pattern (provider aliasing)
-The same mechanism extends to using *the same* provider twice, configured differently — e.g., one AWS account for networking, another for application workloads, or two AWS regions for disaster recovery:
+Then:
+
 ```hcl
-provider "aws" {
-  alias  = "network_account"
-  region = "ap-south-1"
-  # assume_role / profile pointing at the networking AWS account
+resource "aws_instance" "web" {
+  ...
 }
 
-provider "aws" {
-  alias  = "app_account"
-  region = "ap-south-1"
-  # assume_role / profile pointing at the application AWS account
-}
-
-resource "aws_vpc" "shared_network" {
-  provider   = aws.network_account
-  cidr_block = "10.0.0.0/16"
-}
-
-resource "aws_instance" "app_server" {
-  provider  = aws.app_account
-  ami       = data.aws_ami.amazon_linux.id
-  subnet_id = aws_vpc.shared_network.id  # cross-account reference
+resource "github_repository" "app" {
+  ...
 }
 ```
-(Full provider aliasing detail — including multiple regions for DR — is covered in Domain 6 and Domain 4c; this is the conceptual seed of it.)
 
-### What if a team ignores this and hand-rolls separate tools per cloud?
-Some organizations use CloudFormation for AWS, ARM templates for Azure, and Deployment Manager for GCP — one tool per cloud. The cost: three completely different syntaxes, three different state/drift models, three separate sets of tooling/CI integration to maintain, and no single place to see "everything we've provisioned, across every platform." A multi-cloud company using Terraform instead gets one workflow, one language, and one state model regardless of how many clouds/SaaS platforms are actually involved — the entire value proposition of "service-agnostic" IaC.
+A single:
 
-### Real-World Scenario 1 — Regulatory Data Residency
-A fintech company must keep EU customer data on EU infrastructure but can use cheaper US infrastructure for non-regulated workloads. Using provider aliasing (two `aws` provider blocks, two regions), the same Terraform codebase deploys the regulated tier to `eu-central-1` and the non-regulated tier to `us-east-1`, with a single, auditable set of `.tf` files describing the entire policy — instead of two disconnected manual environments that could silently drift apart.
+```bash
+terraform apply
+```
 
-### Real-World Scenario 2 — Full-Stack Provisioning Beyond "just servers"
-A platform team provisions not only AWS infrastructure (VPC, EC2, RDS) but also the GitHub repository + branch protection rules for a new microservice, and a Vault secrets path for its database credentials — all as part of the same "new service" Terraform module. A new engineer runs one `terraform apply` and gets infrastructure, source control, and secrets management fully wired together, instead of three separate manual setup processes across three different tools/consoles.
+can manage both.
+
+### Exam takeaway
+
+> **Terraform is provider-based. Providers contain platform-specific knowledge. This is what allows Terraform to work across AWS, Azure, GCP, Kubernetes, GitHub, etc.**
 
 ---
 
-## 4. Practical Setup (Installation, IDE, AWS Account)
+# 6. Multiple AWS Accounts / Regions
 
-This section is the hands-on prerequisite work — necessary before writing any real Terraform, but conceptually simple, so it's covered efficiently here rather than stretched thin.
+You can also use the **same provider multiple times** with different configurations.
 
-### 4.1 Installing Terraform
-Terraform ships as a single static binary — no installer, no background service.
+This is done using **provider aliases**.
 
-**Windows (two valid approaches):**
-```powershell
-# Chocolatey (recommended - handles upgrades via `choco upgrade` going forward)
-choco install terraform
-
-# Manual (zip-based, no package manager required)
-# Download the zip from developer.hashicorp.com/terraform/install, then:
-# 1. Unzip to C:\terraform\
-# 2. Add C:\terraform\ to your System PATH
-# 3. Open a NEW terminal and confirm:
-terraform -version
-```
-
-**Linux (two valid approaches):**
-```bash
-# Manual (good for disposable/CI environments)
-wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-sudo apt update && sudo apt install terraform
-
-# Package manager (good for long-lived machines you'll upgrade later)
-wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-sudo apt update && sudo apt install terraform
-```
-For RHEL/CentOS/Fedora/Amazon Linux, the equivalent is HashiCorp's `yum` repo:
-```bash
-sudo yum install -y yum-utils
-sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
-sudo yum -y install terraform
-```
-
-**macOS (two valid approaches):**
-```bash
-# Homebrew (recommended - handles upgrades via `brew upgrade` going forward)
-brew tap hashicorp/tap
-brew install hashicorp/tap/terraform
-
-# Manual (same zip-based approach as Linux/Windows)
-curl -O https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_darwin_amd64.zip   # or _arm64_ on Apple Silicon
-unzip terraform_1.9.0_darwin_amd64.zip
-sudo mv terraform /usr/local/bin/
-```
-On first run of a manually-downloaded (non-Homebrew) binary, macOS Gatekeeper may block it as "from an unidentified developer" — approve it once via **System Settings → Privacy & Security → Allow Anyway**, or avoid the prompt entirely by using Homebrew, which handles the notarization/quarantine flag correctly.
-
-**Verify on any OS:**
-```bash
-terraform -version
-```
-
-**What if you install from an untrusted source instead?** You can't verify the binary hasn't been tampered with — always use HashiCorp's official downloads page, or the official apt/yum/Homebrew channels, never a third-party mirror.
-
-### 4.2 Editor Setup
-Terraform code is plain text, but VS Code + the official **HashiCorp Terraform extension** gives you syntax highlighting, format-on-save, and schema-aware autocomplete. **Without it**, you lose all of that — typos like `resouce` instead of `resource` go unnoticed until you run `terraform validate`, instead of being underlined instantly as you type.
-
-### 4.3 AWS Account, MFA, and Authentication vs. Authorization
-Terraform has no identity system of its own for AWS — it borrows real AWS credentials. Before writing code:
-1. Create an AWS account (this creates the **root user** — email + password, tied to a payment method).
-2. Enable **MFA** on the root user immediately — a second proof of identity (an authenticator app code) on top of the password, so a leaked password alone isn't enough to sign in.
-3. Create a dedicated **IAM user** (e.g., `terraform-deployer`) with programmatic access (an Access Key ID + Secret Access Key) — this, not root, is what Terraform will actually use.
-4. Configure the AWS CLI with that user's keys, under a named profile Terraform will reference via `profile = "..."`:
-   ```bash
-   aws configure --profile terraform-dev
-   ```
-   You'll be prompted for four values, in order:
-   ```
-   AWS Access Key ID [None]: AKIA...
-   AWS Secret Access Key [None]: ****************
-   Default region name [None]: ap-south-1
-   Default output format [None]: json
-   ```
-   This writes the key pair to `~/.aws/credentials` (`C:\Users\<user>\.aws\credentials` on Windows) under a `[terraform-dev]` section, and the region/output default to `~/.aws/config` under `[profile terraform-dev]` — never into your Terraform code or version control. Verify it worked with `aws sts get-caller-identity --profile terraform-dev`, which should echo back the IAM user's ARN.
-
-**Authentication vs. Authorization — a distinction worth internalizing, not memorizing:**
-
-| | Authentication | Authorization |
-|---|---|---|
-| Question | "Who are you?" | "What are you allowed to do?" |
-| AWS mechanism | Access Key ID + Secret Access Key (or SSO/federation), strengthened by MFA | IAM **policies** attached to the user/role |
-| Failure mode | `InvalidClientTokenId` / `SignatureDoesNotMatch` — the key itself is wrong/malformed | `UnauthorizedOperation` — the key is valid, but that identity isn't allowed to do this specific thing |
-
-**Example demonstrating the difference:**
-```hcl
-provider "aws" {
-  region  = "ap-south-1"
-  profile = "terraform-dev"   # authenticates AS terraform-deployer (a real, valid IAM user)
-}
-
-resource "aws_instance" "web" {
-  ami           = "ami-0e35ddab05955cf57"
-  instance_type = "t3.micro"
-}
-```
-If `terraform-deployer`'s IAM policy only grants `AmazonS3ReadOnlyAccess`, this `apply` **authenticates successfully** (AWS recognizes the key as valid) but then **fails authorization** with `UnauthorizedOperation: You are not authorized to perform this operation` when it tries to call `RunInstances`. Two entirely different problems: fixing authentication means fixing/rotating the key; fixing authorization means attaching a broader IAM policy (e.g., `AmazonEC2FullAccess`).
-
-In your Terraform configuration:
+Example:
 
 ```hcl
 provider "aws" {
-  region  = "ap-south-1"
-  profile = "terraform-dev"
+  alias  = "india"
+  region = "ap-south-1"
+}
+
+provider "aws" {
+  alias  = "us"
+  region = "us-east-1"
 }
 ```
 
-the `profile` tells the AWS provider **which AWS CLI credentials profile to use**.
+Then a resource can specify which provider configuration to use:
 
-## Why is `profile` needed?
+```hcl
+resource "aws_instance" "india_server" {
+  provider = aws.india
 
-Terraform needs AWS credentials to create, modify, or delete AWS resources.
+  ...
+}
+```
 
-It needs:
+Another:
 
-* Access Key ID
-* Secret Access Key
-* (Optionally) Session Token
+```hcl
+resource "aws_instance" "us_server" {
+  provider = aws.us
 
-Instead of hardcoding these credentials in your Terraform code (which is insecure), Terraform can reuse the credentials stored by the AWS CLI.
+  ...
+}
+```
 
-When you run:
+### Think of it as
+
+```text
+              Terraform
+                  |
+          AWS Provider
+           /         \
+      aws.india     aws.us
+          |            |
+    ap-south-1      us-east-1
+```
+
+### Exam takeaway
+
+> **Provider aliases allow multiple configurations of the same provider.**
+
+---
+
+# 7. Terraform Installation
+
+This is mostly practical knowledge, so don't over-study it.
+
+### Verify installation
+
+```bash
+terraform -version
+```
+
+### Important
+
+Terraform is essentially a **CLI binary**.
+
+You don't need to memorize every installation command for the exam.
+
+Know:
+
+> Terraform must be installed locally before you can run Terraform commands.
+
+---
+
+# 8. AWS Authentication
+
+Terraform needs AWS credentials to communicate with AWS.
+
+Two concepts are extremely important:
+
+## Authentication
+
+> **Who are you?**
+
+Example:
+
+```text
+Access Key
+Secret Key
+```
+
+AWS uses these credentials to identify you.
+
+---
+
+## Authorization
+
+> **What are you allowed to do?**
+
+IAM policies determine permissions.
+
+Example:
+
+```text
+User:
+terraform-deployer
+
+Policy:
+S3 ReadOnly
+```
+
+The credentials can be valid, but the user may not be allowed to create an EC2 instance.
+
+---
+
+## Very important distinction
+
+```text
+Authentication
+      ↓
+"Who are you?"
+      ↓
+Credentials valid?
+      ↓
+YES
+      ↓
+Authorization
+      ↓
+"What can you do?"
+      ↓
+IAM permissions
+```
+
+### Example
+
+Terraform uses valid credentials:
+
+```text
+AWS recognizes user
+        ↓
+Authentication SUCCESS
+        ↓
+Try to create EC2
+        ↓
+IAM policy doesn't allow EC2
+        ↓
+Authorization FAILURE
+```
+
+### Exam takeaway
+
+> **Authentication = identity. Authorization = permissions.**
+
+---
+
+# 9. AWS CLI Profile
+
+Instead of putting AWS credentials directly inside Terraform code, you can use an AWS CLI profile.
+
+Create one:
 
 ```bash
 aws configure --profile terraform-dev
 ```
 
-AWS CLI stores something like:
+You provide:
 
-### `~/.aws/credentials`
-
-```ini
-[terraform-dev]
-aws_access_key_id = AKIAxxxxxxxxxxxx
-aws_secret_access_key = xxxxxxxxxxxxxxxxxxxx
+```text
+Access Key
+Secret Key
+Region
+Output format
 ```
 
-### `~/.aws/config`
+The profile is stored in:
 
-```ini
-[profile terraform-dev]
-region = ap-south-1
-output = json
-```
-
-Then Terraform reads this profile.
-
----
-
-# How Terraform uses it
-
-Suppose your files contain:
-
-```hcl
-provider "aws" {
-  region  = "ap-south-1"
-  profile = "terraform-dev"
-}
-```
-
-Terraform internally does something equivalent to:
-
-```
-Look inside ~/.aws/credentials
-
-Find:
-
-[terraform-dev]
-
-Use these credentials
-```
-
----
-
-# Example
-
-Suppose you're working with multiple AWS accounts.
-
-### Personal Account
-
-```
-[personal]
-aws_access_key_id = AAAA...
-aws_secret_access_key = BBBB...
-```
-
-### Company Dev Account
-
-```
-[terraform-dev]
-aws_access_key_id = CCCC...
-aws_secret_access_key = DDDD...
-```
-
-### Production Account
-
-```
-[production]
-aws_access_key_id = EEEE...
-aws_secret_access_key = FFFF...
-```
-
-Now you can simply change the profile:
-
-```hcl
-provider "aws" {
-  region  = "ap-south-1"
-  profile = "personal"
-}
-```
-
-or
-
-```hcl
-provider "aws" {
-  region  = "ap-south-1"
-  profile = "production"
-}
-```
-
-without changing any credentials.
-
----
-
-# Where are profiles stored?
-
-### Linux / macOS / WSL
-
-```
+```text
 ~/.aws/credentials
 ~/.aws/config
 ```
 
-### Windows
+On Windows:
 
-```
+```text
 C:\Users\<username>\.aws\credentials
 C:\Users\<username>\.aws\config
 ```
 
----
-
-# How to create a profile
-
-Run:
-
-```bash
-aws configure --profile terraform-dev
-```
-
-You'll be prompted for:
-
-```
-AWS Access Key ID:
-AWS Secret Access Key:
-Default region:
-Output format:
-```
-
-After that, Terraform can use:
+Then Terraform can use it:
 
 ```hcl
+provider "aws" {
+  region  = "ap-south-1"
+  profile = "terraform-dev"
+}
+```
+
+### Why use profiles?
+
+Suppose you have:
+
+```text
+[personal]
+[terraform-dev]
+[production]
+```
+
+You can select which credentials Terraform uses without putting secrets into `.tf` files.
+
+### Remember
+
+```text
+Terraform
+    ↓
 profile = "terraform-dev"
+    ↓
+AWS CLI profile
+    ↓
+Credentials
+    ↓
+AWS
 ```
 
 ---
 
-# What if `profile` is omitted?
+# 10. What happens if `profile` is not specified?
 
-Terraform follows the AWS SDK's credential provider chain. It looks for credentials in this general order:
+Terraform/AWS SDK can obtain credentials from other sources.
 
-1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
-2. The profile specified by the `AWS_PROFILE` environment variable
-3. The `default` profile in `~/.aws/credentials`
-4. IAM Role credentials (if running on an EC2 instance)
-5. ECS task roles, EKS IAM Roles for Service Accounts (IRSA), and other supported credential sources
+Common examples:
 
-For example, if your credentials file contains:
+* Environment variables
+* `AWS_PROFILE`
+* Default AWS CLI profile
+* IAM role credentials
+* Other AWS-supported credential mechanisms
 
-```ini
-[default]
-aws_access_key_id = AKIA...
-aws_secret_access_key = ...
-```
-
-then this works without specifying a profile:
+So:
 
 ```hcl
 provider "aws" {
@@ -459,557 +693,590 @@ provider "aws" {
 }
 ```
 
-Terraform automatically uses the `default` profile.
+does **not** necessarily mean Terraform has no credentials.
+
+It means:
+
+> Terraform will use the AWS credential provider chain to find them.
 
 ---
 
-# Why use profiles?
+# 11. Security — Never Hardcode Credentials
 
-Profiles are useful because they let you:
-
-* Use multiple AWS accounts (personal, dev, staging, production).
-* Avoid hardcoding secrets in Terraform code.
-* Easily switch between accounts.
-* Reuse the same credentials that the AWS CLI uses.
-
----
-
-## Visual workflow
-
-```text
-                Terraform
-                    │
-                    ▼
-      provider "aws" {
-          profile = "terraform-dev"
-      }
-                    │
-                    ▼
-      ~/.aws/credentials
-                    │
-        [terraform-dev]
-          Access Key
-          Secret Key
-                    │
-                    ▼
-             AWS Authentication
-                    │
-                    ▼
-            Create EC2, S3, VPC...
-```
-
-
-
-
-**What if you skip creating a scoped IAM user and just use root credentials for Terraform?** If that access key ever leaks (committed to a public repo, pasted into a support ticket, left in a Docker image layer), the blast radius is **the entire AWS account** — billing, every service, every resource — not just what Terraform manages. A scoped IAM user limits the blast radius of a leak to whatever that policy actually allows.
-
-### Best practice
-
-For local development, using AWS CLI profiles is a common and secure approach. In CI/CD pipelines (such as GitHub Actions, GitLab CI, or Jenkins), it's generally better **not** to use `profile`. Instead, provide credentials through environment variables or, preferably, use temporary credentials by assuming an IAM role (for example, via OIDC). This avoids storing long-lived credentials on the build server and aligns with AWS security best practices.
-
-### Real-World Scenario 1 — A Leaked Key, Two Different Outcomes
-Company A hardcodes their **root** access key into a `provider "aws" {}` block that accidentally gets pushed to a public GitHub repo. Within minutes, automated scanners find it; the attacker has full account control — they can spin up cryptomining instances, exfiltrate S3 data, and even close the account. Company B made the same mistake, but had used a scoped `terraform-deployer` IAM user with only EC2/VPC permissions. The attacker can create/delete EC2 instances (real damage, but contained) — they cannot touch billing, IAM, or any other service. Same mistake, wildly different blast radius, purely because of the authorization design.
-
-### Real-World Scenario 2 — MFA Stopping a Credential Stuffing Attack
-An engineer reuses a password across multiple services; one of those services suffers a breach and the password leaks in a public dump. Attackers run automated "credential stuffing" against thousands of sites, including the AWS sign-in page, using that leaked password. Because MFA is enabled on the IAM user, the password alone gets the attacker nowhere — they're blocked at the authenticator-code prompt, and the account owner never even notices the attempt happened.
-
-### 4.4 Your First Resource — Launching an EC2 Instance
-Everything up to this point has been setup. This is the moment it becomes real: one `resource` block, one `apply`, one actual running server in your AWS account.
+❌ Don't do this:
 
 ```hcl
-# main.tf
+provider "aws" {
+  access_key = "AKIA..."
+  secret_key = "SECRET..."
+}
+```
+
+Why?
+
+Your Terraform code might be committed to Git.
+
+Then:
+
+```text
+Terraform code
+      ↓
+GitHub
+      ↓
+Credentials exposed
+      ↓
+Attacker
+      ↓
+AWS account
+```
+
+### Better approaches
+
+For local development:
+
+```text
+AWS CLI profile
+```
+
+or environment variables.
+
+For CI/CD:
+
+```text
+Temporary credentials
+IAM roles
+OIDC
+```
+
+### Important exam idea
+
+> **Avoid long-lived credentials in Terraform code.**
+
+---
+
+# 12. Your First Terraform Resource
+
+Basic example:
+
+```hcl
 provider "aws" {
   region  = "ap-south-1"
   profile = "terraform-dev"
 }
 
-resource "aws_instance" "first_server" {
-  ami           = "ami-0e35ddab05955cf57"   # Amazon Linux 2, ap-south-1 — replace with a current AMI
-  instance_type = "t3.micro"                # eligible for the AWS free tier
-}
-```
-
-**Reading this block like a beginner should, argument by argument:**
-- `resource "aws_instance" "first_server"` — the **type** (`aws_instance`, owned by the AWS provider) and the **local name** (`first_server`, how *you* refer to it elsewhere in this config — it is not the AWS resource's actual name/ID).
-- `ami` — which machine image to boot from. This is **required**; Terraform will refuse to `plan` without it.
-- `instance_type` — the hardware size (vCPU/RAM) to rent. Also required.
-- Everything else (a `key_name`, a `subnet_id`, `tags`) is **optional** — omit them and AWS applies its own defaults (e.g., the instance lands in your account's default VPC/subnet).
-
-**What actually happens when you run the three commands for the very first time:**
-```bash
-terraform init     # downloads the aws provider plugin — nothing exists in AWS yet
-terraform plan     # shows a "+ create" diff — still nothing exists, this is read-only
-terraform apply    # asks for confirmation, then actually calls the AWS RunInstances API
-```
-
-When you run:
-
-```bash
-terraform init
-```
-
-Terraform **does not create any infrastructure**. Its job is to **prepare the working directory** so that future commands like `terraform plan` and `terraform apply` can run successfully.
-
-In your case, it created two important things:
-
-```
-Terraform_Practise/
-└── Domain-1/
-    └── 1.Simple_EC2/
-        ├── main.tf
-        ├── .terraform.lock.hcl
-        └── .terraform/
-            └── providers/
-                └── registry.terraform.io/
-                    └── hashicorp/
-                        └── aws/
-                            └── 6.54.0/
-                                └── linux_amd64/
-                                    └── terraform-provider-aws_v6.54.0_x5
-```
-
-Let's understand each one in detail.
-
----
-
-# 1. `.terraform.lock.hcl`
-
-This is called the **dependency lock file**.
-
-Think of it like:
-
-* `package-lock.json` in Node.js
-* `Pipfile.lock` in Python
-* `go.sum` in Go
-
-Its purpose is to **lock the exact provider versions** used by your Terraform configuration.
-
----
-
-## Why does Terraform create it?
-
-Suppose your code is:
-
-```hcl
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = ">= 6.0"
-    }
-  }
-}
-```
-
-Without a lock file:
-
-```
-Today
--------
-Latest version = 6.54.0
-
-Tomorrow
---------
-Latest version = 6.60.0
-```
-
-If every developer runs:
-
-```bash
-terraform init
-```
-
-they might end up using different provider versions, which can introduce subtle differences or incompatibilities.
-
-The lock file ensures everyone uses the **same tested version** until you intentionally upgrade it.
-
----
-
-## What does it contain?
-
-A typical `.terraform.lock.hcl` looks like:
-
-```hcl
-provider "registry.terraform.io/hashicorp/aws" {
-  version     = "6.54.0"
-  constraints = ">= 6.0"
-
-  hashes = [
-    "h1:xxxxxxxxxxxxxxxx",
-    "zh:xxxxxxxxxxxxxxxx",
-    ...
-  ]
-}
-```
-
-### `version`
-
-```hcl
-version = "6.54.0"
-```
-
-The exact provider version Terraform selected.
-
----
-
-### `constraints`
-
-```hcl
-constraints = ">= 6.0"
-```
-
-The version rule from your configuration.
-
-Terraform resolved that rule to version `6.54.0`.
-
----
-
-### `hashes`
-
-These are cryptographic checksums.
-
-Terraform verifies the downloaded provider binary matches these hashes to ensure it hasn't been corrupted or tampered with.
-
-Think of them as a fingerprint of the provider binary.
-
----
-
-## Why is this important?
-
-Imagine someone compromised a download mirror and replaced the provider binary.
-
-Without hash verification:
-
-```
-Terraform downloads malicious binary
-```
-
-With the lock file:
-
-```
-Downloaded hash
-      ≠
-Expected hash
-
-❌ Terraform refuses to use it.
-```
-
----
-
-## Should you commit it to Git?
-
-**Yes.**
-
-This is the recommended practice.
-
-It ensures every developer and your CI/CD pipeline use the same provider version.
-
----
-
-# 2. `.terraform/`
-
-This is Terraform's **working directory**.
-
-It contains files that Terraform needs to execute your configuration locally.
-
-Unlike the lock file, this directory is **not** typically committed to Git.
-
----
-
-## Inside `.terraform`
-
-```
-.terraform
-└── providers
-```
-
-This stores downloaded provider plugins.
-
----
-
-# 3. `providers/`
-
-```
-providers/
-```
-
-This folder contains all provider binaries required by your configuration.
-
-For example:
-
-```
-AWS Provider
-
-Azure Provider
-
-Google Provider
-```
-
-If your configuration used all three, Terraform would download all of them into this directory.
-
----
-
-# 4. `registry.terraform.io`
-
-```
-registry.terraform.io
-```
-
-This identifies the source of the provider.
-
-Terraform downloads providers from the official Terraform Registry by default.
-
-For example:
-
-```
-hashicorp/aws
-
-hashicorp/azurerm
-
-hashicorp/google
-```
-
-All of these come from:
-
-```
-registry.terraform.io
-```
-
----
-
-# 5. `hashicorp`
-
-```
-registry.terraform.io/
-        hashicorp/
-```
-
-This is the **provider namespace**.
-
-HashiCorp publishes many official providers:
-
-* AWS
-* AzureRM
-* Google
-* Kubernetes
-* Helm
-
-The namespace distinguishes official providers from community or partner providers.
-
-Examples:
-
-```
-hashicorp/aws
-
-hashicorp/kubernetes
-
-oracle/oci
-
-kreuzwerker/docker
-```
-
----
-
-# 6. `aws`
-
-```
-hashicorp/
-    aws/
-```
-
-This identifies the specific provider.
-
-It contains all the code Terraform needs to interact with AWS services such as EC2, S3, IAM, and VPC.
-
----
-
-# 7. `6.54.0`
-
-```
-aws/
-   6.54.0/
-```
-
-This is the downloaded provider version.
-
-If you later upgrade:
-
-```bash
-terraform init -upgrade
-```
-
-you might instead see:
-
-```
-6.55.0
-```
-
-Terraform can keep multiple versions cached if different projects require different versions.
-
----
-
-# 8. `linux_amd64`
-
-```
-6.54.0/
-    linux_amd64/
-```
-
-This specifies the platform the provider binary is built for.
-
-Examples include:
-
-| Operating System      | CPU Architecture         | Folder          |
-| --------------------- | ------------------------ | --------------- |
-| Linux                 | AMD64 (Intel/AMD 64-bit) | `linux_amd64`   |
-| Linux                 | ARM64                    | `linux_arm64`   |
-| Windows               | AMD64                    | `windows_amd64` |
-| macOS (Intel)         | AMD64                    | `darwin_amd64`  |
-| macOS (Apple Silicon) | ARM64                    | `darwin_arm64`  |
-
-Since you're using WSL2 Ubuntu, Terraform downloaded the Linux AMD64 binary.
-
----
-
-# 9. `terraform-provider-aws_v6.54.0_x5`
-
-This is the actual **AWS provider executable**.
-
-```
-terraform-provider-aws_v6.54.0_x5
-```
-
-Think of it as a specialized program that knows how to talk to AWS APIs.
-
-When you write:
-
-```hcl
 resource "aws_instance" "web" {
-  ami           = "ami-123456"
+  ami           = "ami-123"
   instance_type = "t3.micro"
 }
 ```
 
-Terraform itself doesn't know how to create an EC2 instance. Instead, it delegates that work to the AWS provider.
-
-The flow looks like this:
+Understand the resource syntax:
 
 ```text
-You
- │
- ▼
-main.tf
- │
- ▼
-Terraform CLI
- │
- │ Reads configuration
- ▼
-AWS Provider Plugin
-(terraform-provider-aws_v6.54.0_x5)
- │
- │ Calls AWS APIs
- ▼
-AWS Cloud
- │
- ▼
-EC2 Instance Created
+resource "aws_instance" "web"
+          │              │
+          │              └── Local Terraform name
+          └───────────────── Resource type
+```
+
+### `aws_instance`
+
+Means:
+
+> EC2 instance managed by the AWS provider.
+
+### `web`
+
+Just Terraform's local name for this resource.
+
+You can reference it later as:
+
+```text
+aws_instance.web
 ```
 
 ---
 
-# Why is the provider a separate executable?
+# 13. `terraform init`
 
-Terraform has a plugin architecture. The core Terraform CLI focuses on planning, dependency graphs, and state management. Provider-specific logic is kept in separate plugins.
+Run:
 
-Benefits include:
+```bash
+terraform init
+```
 
-* Terraform core stays lightweight.
-* Providers can be updated independently of Terraform.
-* New providers can be added without changing Terraform itself.
-* Different providers can have independent release cycles.
+### What does it do?
 
----
+Mainly:
 
-# Putting it all together
+* Initializes the Terraform working directory.
+* Downloads required providers.
+* Creates/updates dependency information.
+
+### Important
+
+`terraform init` **does NOT create your EC2 instance.**
+
+Think:
 
 ```text
 terraform init
-        │
-        ▼
-Reads main.tf
-        │
-        ▼
-Finds required provider:
-hashicorp/aws
-        │
-        ▼
-Checks .terraform.lock.hcl
-        │
-        ├── Exists?
-        │      │
-        │      ├── Yes → Use locked version
-        │      └── No  → Select a version and create lock file
-        │
-        ▼
-Downloads provider binary
-(terraform-provider-aws_v6.54.0_x5)
-        │
-        ▼
-Stores it under:
-.terraform/providers/...
-        │
-        ▼
-Future commands (`plan`, `apply`, `destroy`)
-use the downloaded provider to communicate with AWS.
+      ↓
+Prepare Terraform
+      ↓
+Download provider
 ```
 
-## Summary
+---
 
-| Item                                | Purpose                                                                                    | Commit to Git? |
-| ----------------------------------- | ------------------------------------------------------------------------------------------ | -------------- |
-| `.terraform.lock.hcl`               | Locks provider versions and stores integrity hashes for reproducible, secure builds        | ✅ Yes          |
-| `.terraform/`                       | Local working directory containing downloaded providers and other initialization artifacts | ❌ No           |
-| `providers/`                        | Stores provider plugins                                                                    | ❌ No           |
-| `registry.terraform.io/`            | Identifies the provider registry source                                                    | ❌ No           |
-| `hashicorp/`                        | Provider namespace (publisher)                                                             | ❌ No           |
-| `aws/`                              | AWS provider                                                                               | ❌ No           |
-| `6.54.0/`                           | Specific provider version                                                                  | ❌ No           |
-| `linux_amd64/`                      | Platform-specific build                                                                    | ❌ No           |
-| `terraform-provider-aws_v6.54.0_x5` | Executable plugin that translates Terraform resource definitions into AWS API calls        | ❌ No           |
+# 14. `terraform plan`
 
+Run:
 
+```bash
+terraform plan
+```
+
+Terraform asks:
+
+> "Based on the configuration and current infrastructure, what changes would I make?"
+
+Example:
+
+```text
++ aws_instance.web
+```
+
+`+` means:
+
+> Create this resource.
+
+### Important
+
+`plan` does **not normally make the infrastructure change**.
+
+It is your opportunity to review what Terraform intends to do.
 
 ---
 
-After `apply` succeeds, two things now exist that didn't before: a real, billable EC2 instance in your AWS account, and an entry for it in `terraform.tfstate` — the local file Terraform uses to remember "I created this, here's its real AWS ID" so that the *next* `plan` can compare desired vs. current instead of blindly creating a second instance. (The full mechanics of the state file are the subject of Domain 2's next file — this is deliberately just enough to make your first `apply` make sense.)
+# 15. `terraform apply`
 
-**What if you skip `terraform plan` and go straight to `apply`?** `apply` runs its own plan internally and still shows you the diff before asking for confirmation, so nothing is silently hidden — but making `plan` a distinct, deliberate step in your habit builds the reflex of *reading the diff before approving it*, which matters enormously once your configs are managing dozens of resources and a mistaken change could otherwise slip past an on-autopilot `yes`.
+Run:
 
-### 4.5 Important Security Pointer (Before You Go Further)
-Two habits to lock in right now, before your first real project, because they're much harder to retrofit later:
-1. **Never hardcode a real access key, secret key, or session token directly inside a `.tf` file** — not even "just for this test," not even in a private repo. Use a named CLI profile (`profile = "terraform-dev"`, as shown above) or environment variables (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`), so credentials never exist as text inside a file that Git might one day track.
-2. **Watch what you actually launch.** `t3.micro` is free-tier eligible; it's easy to follow an online example that specifies a much larger instance type, run `apply`, and get billed for it. Always sanity-check `instance_type` (and any `count`/`for_each` multiplying it) against what you intend to pay for — and remember to `terraform destroy` anything you spin up purely to practice, so it doesn't keep accruing charges after you've moved on to the next lecture.
+```bash
+terraform apply
+```
 
-Both of these are small habits now and expensive incidents later — a leaked key or an un-destroyed practice environment left running for a month are two of the most common ways beginners get an unpleasant AWS bill.
+Terraform:
+
+```text
+Read configuration
+      ↓
+Check state/current infrastructure
+      ↓
+Create execution plan
+      ↓
+Ask for confirmation
+      ↓
+Call provider
+      ↓
+AWS API
+      ↓
+EC2 created
+```
+
+### Remember
+
+```text
+init   → prepare
+plan   → preview
+apply  → execute
+```
+
+This is one of the most useful command relationships to remember.
 
 ---
 
-## 5. Practice Questions
+# 16. `.terraform.lock.hcl`
 
-### Easy
-1. What's the key difference between declarative and imperative infrastructure management?
-2. Name two concrete advantages of IaC over manually clicking through a cloud console.
-3. True/False: Terraform Core has built-in, hardcoded knowledge of the AWS API.
+This is the **provider dependency lock file**.
 
-### Medium
-4. Explain, using the idempotency property, why running the same Terraform config's `apply` twice doesn't create duplicate resources — but running the equivalent imperative AWS CLI script twice, might.
-5. A company uses three different IaC tools (one per cloud they operate in). List two concrete costs of this approach that a single, provider-based tool like Terraform avoids.
-6. An IAM user authenticates successfully with a valid access key but gets `UnauthorizedOperation` trying to launch an EC2 instance. Diagnose the two separate concepts at play and how you'd fix it.
+Think:
 
-### Hard
-7. Design a provider-aliasing setup (sketch the HCL) for a fintech company that must keep EU customer data in `eu-central-1` while using `us-east-1` for non-regulated workloads, all from one Terraform codebase.
-8. A startup's root AWS credentials get accidentally committed to a public repository. Walk through, step by step, what an attacker could do with root-level access versus what they could do if the leaked credentials instead belonged to a `terraform-deployer` IAM user scoped to `AmazonEC2FullAccess` and `AmazonVPCFullAccess` only.
+> "Which exact provider version should this project use?"
+
+Example:
+
+```hcl
+provider "registry.terraform.io/hashicorp/aws" {
+  version = "6.54.0"
+}
+```
+
+### Why?
+
+Suppose today:
+
+```text
+AWS provider = 6.54
+```
+
+Later:
+
+```text
+AWS provider = 6.60
+```
+
+You don't necessarily want everyone's environment to suddenly use a different version.
+
+The lock file helps keep provider versions consistent.
+
+### Important
+
+✅ Commit `.terraform.lock.hcl` to Git.
 
 ---
-**Next:** [02-domain2-terraform-fundamentals.md](02-domain2-terraform-fundamentals.md)
+
+# 17. `.terraform/`
+
+This is Terraform's **local working directory**.
+
+It contains things Terraform downloads/uses locally, including providers.
+
+Example:
+
+```text
+.terraform/
+    providers/
+        ...
+```
+
+### Important
+
+❌ Normally don't commit `.terraform/` to Git.
+
+---
+
+# 18. Provider Binary
+
+Inside `.terraform` you may see something like:
+
+```text
+terraform-provider-aws_v6.54.0_x5
+```
+
+This is the actual AWS provider executable.
+
+Think:
+
+```text
+Terraform CLI
+      ↓
+AWS Provider Plugin
+      ↓
+AWS API
+```
+
+Terraform Core doesn't contain all AWS-specific implementation details.
+
+The provider does.
+
+---
+
+# 19. `.terraform.lock.hcl` vs `.terraform/`
+
+This distinction is worth remembering:
+
+| Item                  | Purpose                                 | Git?           |
+| --------------------- | --------------------------------------- | -------------- |
+| `.terraform.lock.hcl` | Locks provider version/checksums        | ✅ Commit       |
+| `.terraform/`         | Local Terraform working files/providers | ❌ Don't commit |
+
+---
+
+# 20. Terraform State — Just Enough for Domain 1
+
+Don't go deep into state yet; that's the next domain.
+
+For now understand:
+
+After:
+
+```bash
+terraform apply
+```
+
+Terraform keeps information about the resources it manages in:
+
+```text
+terraform.tfstate
+```
+
+For example:
+
+```text
+Terraform state
+      ↓
+"I created EC2 instance i-123456"
+```
+
+Later, Terraform can compare:
+
+```text
+Terraform configuration
+        VS
+Terraform state / real infrastructure
+```
+
+and determine what needs to change.
+
+### Why this matters for idempotency
+
+First apply:
+
+```text
+No EC2
+  ↓
+Create EC2
+  ↓
+State records it
+```
+
+Second apply:
+
+```text
+Terraform sees EC2 already exists
+  ↓
+No duplicate EC2
+```
+
+We'll go much deeper into state in Domain 2.
+
+---
+
+# 21. The Complete Mental Model
+
+If you remember only one diagram from Domain 1, remember this:
+
+```text
+                  main.tf
+                     |
+                     ↓
+              Terraform Core
+                     |
+             Reads configuration
+                     |
+             Builds execution plan
+                     |
+                     ↓
+              Provider Plugin
+                     |
+                     ↓
+                 AWS API
+                     |
+                     ↓
+              AWS Resources
+```
+
+And credentials are used along the way:
+
+```text
+Terraform
+    ↓
+AWS Provider
+    ↓
+AWS Credentials/Profile
+    ↓
+AWS Authentication
+    ↓
+IAM Authorization
+    ↓
+AWS API
+```
+
+---
+
+# 22. Commands You Actually Need to Remember
+
+| Command              | Meaning                                            |
+| -------------------- | -------------------------------------------------- |
+| `terraform init`     | Initialize directory / download providers          |
+| `terraform plan`     | Preview changes                                    |
+| `terraform apply`    | Apply changes                                      |
+| `terraform destroy`  | Destroy managed infrastructure                     |
+| `terraform validate` | Check Terraform configuration syntax/configuration |
+
+### Easy memory trick
+
+```text
+INIT → PLAN → APPLY → DESTROY
+```
+
+---
+
+# 23. Exam-Level Scenarios
+
+### Scenario 1
+
+You run Terraform `apply` twice. Will Terraform create two EC2 instances?
+
+**No.**
+
+Because Terraform is declarative and uses state to determine what already exists.
+
+---
+
+### Scenario 2
+
+Terraform has valid AWS credentials but receives:
+
+```text
+UnauthorizedOperation
+```
+
+What is wrong?
+
+**Authorization.**
+
+The identity was authenticated successfully, but its IAM permissions don't allow the operation.
+
+---
+
+### Scenario 3
+
+Terraform needs to create an EC2 instance. Does Terraform Core directly know how to call the EC2 API?
+
+**No.**
+
+The **AWS provider** handles AWS-specific API interaction.
+
+---
+
+### Scenario 4
+
+You want Terraform to manage AWS and GitHub resources.
+
+Do you need two separate Terraform projects?
+
+**Not necessarily.**
+
+You can use:
+
+```text
+AWS provider
+GitHub provider
+```
+
+in the same Terraform configuration.
+
+---
+
+### Scenario 5
+
+You run:
+
+```bash
+terraform init
+```
+
+Will an EC2 instance be created?
+
+**No.**
+
+`init` prepares Terraform and downloads providers.
+
+---
+
+### Scenario 6
+
+You accidentally commit AWS credentials to Git.
+
+What's the problem?
+
+The credentials may be exposed, allowing someone to authenticate to AWS.
+
+**Never hardcode credentials in Terraform code.**
+
+---
+
+# 24. Domain 1 — What You Should Actually Remember
+
+If you're preparing for the Terraform Associate exam, I'd reduce the entire domain to this:
+
+### IaC
+
+* Infrastructure managed through code.
+* Terraform is primarily **declarative**.
+* Declarative = define **desired state**.
+* Terraform is **idempotent**.
+
+### Benefits
+
+* Version control
+* Consistency
+* Collaboration
+* Automation/self-service
+* Reproducibility
+* Cost control
+
+### Terraform Architecture
+
+* **Terraform Core** → planning, state, dependency graph
+* **Provider** → communicates with specific platform/API
+* AWS → AWS provider
+* GitHub → GitHub provider
+* Kubernetes → Kubernetes provider
+
+### Multi-cloud
+
+* Multiple providers can exist in one Terraform configuration.
+* Provider aliases allow multiple configurations of the same provider.
+
+### AWS Authentication
+
+* **Authentication = Who are you?**
+* **Authorization = What can you do?**
+* IAM policies control authorization.
+* Prefer profiles/temporary credentials rather than hardcoded credentials.
+
+### Important files
+
+```text
+main.tf
+    ↓
+Terraform configuration
+
+.terraform.lock.hcl
+    ↓
+Provider version/checksum lock
+    ↓
+COMMIT
+
+.terraform/
+    ↓
+Local working directory/providers
+    ↓
+DON'T COMMIT
+
+terraform.tfstate
+    ↓
+Terraform's record of managed infrastructure
+    ↓
+State is covered deeply in Domain 2
+```
+
+### Core commands
+
+```text
+terraform init
+      ↓
+terraform plan
+      ↓
+terraform apply
+      ↓
+terraform destroy
+```
+
+---
+
+This is the style I recommend for **all your remaining Terraform notes**: **short theory + bullet-point explanation + practical example + exam takeaway**, rather than explaining every concept from multiple angles. The uploaded notes cover these Domain 1 objectives and setup topics. 
