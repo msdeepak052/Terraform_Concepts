@@ -1,14 +1,48 @@
 # Domain 2 — Terraform Fundamentals
 
-*Official exam objectives covered: 2a (Install and version providers), 2b (How Terraform uses providers), 2c (Multi-provider configuration), 2d (How Terraform uses and manages state)*
-*Course lectures folded in: Resource and Providers, Provider Tiers, Create GitHub Repository through Terraform, AWS Provider Authentication Configuration, Terraform Provider Versioning, Dependency Lock File, Multiple Provider Configuration, Overview of Terraform State File, Desired State vs Current State, Terraform Refresh*
+## 1. What is a Provider?
 
----
+### Core idea
 
-## 1. What a Provider Actually Is
+* A **provider is a plugin** that allows Terraform to communicate with an external platform/API.
+* Terraform Core itself doesn't know how to create an EC2, S3 bucket, GitHub repository, etc.
+* The provider contains the platform-specific knowledge.
 
-### Definition
-A provider is a **plugin** — a separate executable, downloaded independently of Terraform Core — that translates HCL resource blocks into real API calls for one specific platform. `hashicorp/aws` knows how to call EC2's `RunInstances`, S3's `CreateBucket`, etc. Terraform Core itself contains **zero** platform-specific logic; it only knows how to parse HCL, build a dependency graph, and hand off work to whichever provider owns a given resource type.
+### Think of it like this
+
+```text
+Terraform Core
+      |
+      ↓
+AWS Provider
+      |
+      ↓
+AWS API
+      |
+      ↓
+EC2 / S3 / VPC
+```
+
+### Example
+
+You write:
+
+```hcl
+resource "aws_instance" "web" {
+  ami           = "ami-123"
+  instance_type = "t3.micro"
+}
+```
+
+Terraform Core understands:
+
+> "I need to create a resource."
+
+The **AWS provider** understands:
+
+> "This is an `aws_instance`, so I need to call the AWS EC2 API."
+
+### Mermaid — Provider flow
 
 ```mermaid
 sequenceDiagram
@@ -19,359 +53,1087 @@ sequenceDiagram
 
     You->>Core: terraform apply
     Core->>Core: Parse .tf files, build dependency graph
-    Core->>Plugin: "create this aws_instance" (via plugin RPC protocol)
-    Plugin->>API: RunInstances (real HTTPS call, signed with SigV4)
+    Core->>Plugin: "create this aws_instance"
+    Plugin->>API: RunInstances
     API-->>Plugin: instance ID, ARN, attributes
     Plugin-->>Core: resource attributes
     Core->>Core: Write result into terraform.tfstate
 ```
 
-### What if Terraform Core *did* have AWS knowledge baked in?
-This is worth imagining to understand why the plugin architecture matters: every new AWS service (there are hundreds) would require a new Terraform Core release. Every provider bug would block on the Terraform Core release cycle. Instead, `hashicorp/aws` ships its own releases, on its own schedule, and Azure/GCP/Kubernetes/GitHub/Vault providers all evolve completely independently — this is *why* Terraform can support 4,000+ providers on the Registry without Core becoming an unmaintainable monolith.
+### Remember
+
+> **Terraform Core = orchestration/planning**
+> **Provider = talks to the actual platform**
 
 ---
 
-## 2. Provider Tiers (know this for the exam)
+# 2. Provider Tiers
 
-| Tier | Maintainer | Trust level | Example |
-|---|---|---|---|
-| **Official** | HashiCorp itself | Highest | `hashicorp/aws`, `hashicorp/vault` |
-| **Partner** | Verified third-party company | Vendor-maintained, HashiCorp-verified | `datadog/datadog`, `mongodb/mongodbatlas` |
-| **Community** | Individual/community contributor | No HashiCorp guarantee | Hundreds of smaller, narrow-purpose providers |
-| *Archived* | Formerly active, no longer maintained | Avoid for new work | — |
+Terraform providers generally fall into these categories:
 
-**Exam trap:** "Official" does not mean "bundled into Terraform." Even `hashicorp/aws` is downloaded separately on `terraform init`.
+| Tier          | Maintained by                | Example            |
+| ------------- | ---------------------------- | ------------------ |
+| **Official**  | HashiCorp                    | `hashicorp/aws`    |
+| **Partner**   | Verified third-party company | `datadog/datadog`  |
+| **Community** | Community/individuals        | Various            |
+| **Archived**  | No longer maintained         | Avoid for new work |
 
-**What if you use an unmaintained Community-tier provider in production?** If it breaks against a new API version, or has a security bug, there's no vendor SLA and possibly no active maintainer to fix it — you either fork and patch it yourself, or you're stuck. Audit the provider's GitHub activity (last commit date, open issue count, whether maintainers respond) before depending on a Community-tier provider for anything business-critical.
+### Important exam point
+
+**Official does NOT mean built into Terraform.**
+
+For example:
+
+```text
+hashicorp/aws
+```
+
+is still downloaded separately when you run:
+
+```bash
+terraform init
+```
+
+### Easy way to remember
+
+```text
+Official  → HashiCorp
+Partner   → Verified company
+Community → Community developer
+Archived  → No longer maintained
+```
 
 ---
 
-## 3. Installing and Versioning Providers (Objective 2a)
+# 3. Provider Versioning
 
-### The `required_providers` block
+Terraform needs to know:
+
+> "Which version of the provider should I use?"
+
+You define this inside:
+
 ```hcl
 terraform {
   required_providers {
     aws = {
-      source  = "hashicorp/aws"   # registry namespace/name
-      version = "~> 5.0"          # version constraint
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
     }
   }
 }
 ```
-`terraform init` reads this, downloads the matching plugin binary into `.terraform/providers/`, and records the *exact* resolved version in `.terraform.lock.hcl`.
 
-### Version constraint syntax — every variant, with consequences
-| Constraint | Meaning | Real consequence |
-|---|---|---|
-| `= 5.31.0` | Exactly this version | Safest for reproducibility; you must manually bump it for any update, including security patches |
-| `>= 5.0` | This version or newer | **Dangerous** — a future `terraform init` on a new machine could silently pull a breaking major version |
-| `~> 5.0` | Any `5.x`, never `6.0` | The standard recommendation — allows minor/patch updates, blocks breaking major changes |
-| `~> 5.31` | Only `5.31.x` | Tighter — even minor updates within `5.x` are blocked, only patches allowed |
-| *(no constraint)* | Latest available at `init` time | **Avoid** — different teammates/CI runs on different days get different versions |
+### Three important things
 
-**Example — the failure this actually causes:**
-```hcl
-# BAD: no version constraint
-terraform {
-  required_providers {
-    aws = { source = "hashicorp/aws" }
-  }
-}
-```
-A teammate runs `terraform init` for the first time six months after the project started. The AWS provider has since released v6.0.0 with breaking changes (renamed arguments, removed resources). Their `terraform plan` fails with unfamiliar errors — not because their code is wrong, but because they silently got a different provider version than everyone else who set up the project earlier.
-
-```hcl
-# GOOD
-terraform {
-  required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 5.0" }
-  }
-}
-```
-Now `init` is guaranteed to stay within the `5.x` line — and the `.terraform.lock.hcl` file (committed to Git) pins the *exact* patch version + cryptographic hash, so literally every machine gets byte-identical provider binaries.
-
-### Real-World Scenario 1 — The Silent Breaking Upgrade
-A platform team's CI pipeline runs `terraform init` fresh on every build (no cached `.terraform` directory). One Tuesday, a provider's new major version ships with a renamed required argument. Every build starts failing simultaneously across every branch, with no code change having been made — the on-call engineer spends an hour confused before realizing the provider version itself moved. A `~>` constraint plus a committed lock file would have prevented this outright; the fix afterward is exactly that.
-
-### Real-World Scenario 2 — Reproducing a Bug from Three Months Ago
-An incident review needs to reproduce the exact infrastructure state from a deployment three months ago, including the exact provider behavior at that time (a provider bug was later patched, and the team needs to confirm it caused the incident). Because `.terraform.lock.hcl` was committed at every commit, `git checkout` to that commit plus `terraform init` reproduces the *exact* provider version from that day — without the lock file, this would be forensically impossible.
-
-### The Dependency Lock File (`.terraform.lock.hcl`) in Detail
-The version constraint in `required_providers` (`~> 5.0`) describes a *range*; it deliberately does not pin one exact version, so different runs could in principle resolve to different patch releases. The lock file is what removes that ambiguity — it's the actual pinning mechanism, generated automatically by `terraform init` the first time it resolves providers, and updated only when you explicitly ask it to.
-
-**What it actually contains:**
-```hcl
-# .terraform.lock.hcl (excerpt — auto-generated, do not hand-edit)
-provider "registry.terraform.io/hashicorp/aws" {
-  version     = "5.62.0"
-  constraints = "~> 5.0"
-  hashes = [
-    "h1:9J1n5z2j8...",   # cryptographic hash of the plugin binary
-    "zh:1a2b3c4d...",    # additional per-platform hashes
-  ]
-}
-```
-The `hashes` list is what makes this a *security* mechanism, not just a version pin: every future `terraform init` re-downloads the provider and verifies its hash matches what's recorded here. If a provider's binary were ever tampered with (a compromised mirror, a supply-chain attack on the Registry), `init` would fail loudly with a checksum mismatch instead of silently installing a modified plugin.
-
-**Multi-platform teams — a real gotcha:** by default, `init` only records hashes for the platform it ran on. A team where some engineers develop on macOS (arm64) and CI runs on Linux (amd64) can hit `Error: the current package for registry.terraform.io/hashicorp/aws ... doesn't match any of the checksums in the lock file` — not because anything is actually wrong, but because only one platform's hash was ever recorded. Fix it by generating hashes for every platform the team/CI actually uses:
-```bash
-terraform providers lock \
-  -platform=windows_amd64 \
-  -platform=darwin_amd64 \
-  -platform=darwin_arm64 \
-  -platform=linux_amd64
-```
-
-**What if you don't commit `.terraform.lock.hcl` to Git** (e.g., it's in `.gitignore` alongside `.terraform/`)? You lose the entire guarantee above — every fresh clone/CI run re-resolves versions independently within the `~>` range, so two engineers (or two CI runs a week apart, if a new patch version ships in between) can silently end up on different provider patch versions. Unlike `.terraform/` (a large, disposable local cache — correctly gitignored), `.terraform.lock.hcl` is small, human-readable, and meant to be committed and code-reviewed like any other dependency-pinning file (comparable to `package-lock.json` or `Gemfile.lock`).
-
-### Real-World Scenario 3 — The Mixed-OS Checksum Failure
-A team's engineers are split between Windows and macOS laptops; their CI runs on Linux containers. The lock file was first generated by a Windows engineer's `terraform init` and committed as-is. Every CI build immediately fails with a checksum-mismatch error — not a real security problem, just an incomplete lock file that never recorded Linux-platform hashes. Running `terraform providers lock -platform=linux_amd64` (in addition to the existing Windows platform) once, and recommitting the updated lock file, permanently fixes CI without anyone needing to touch application code.
+* `aws` → local provider name
+* `hashicorp/aws` → provider source
+* `~> 5.0` → version constraint
 
 ---
 
-## 4. How Terraform Uses Providers (Objective 2b)
+# 4. Version Constraints
 
-### The `provider` block — configuring an instance of a plugin
+This is important for the exam.
+
+| Constraint    | Meaning          |
+| ------------- | ---------------- |
+| `= 5.31.0`    | Exactly 5.31.0   |
+| `>= 5.0`      | 5.0 or newer     |
+| `~> 5.0`      | 5.x versions     |
+| `~> 5.31`     | 5.31.x versions  |
+| No constraint | Latest available |
+
+### Most important
+
+```text
+~> 5.0
+```
+
+means:
+
+> Allow updates within the **5.x** series, but don't move to 6.x.
+
+Example:
+
+```text
+5.0 ✅
+5.10 ✅
+5.62 ✅
+5.99 ✅
+6.0 ❌
+```
+
+Whereas:
+
+```text
+~> 5.31
+```
+
+means:
+
+```text
+5.31.0 ✅
+5.31.5 ✅
+5.31.9 ✅
+
+5.32.0 ❌
+6.0.0 ❌
+```
+
+### Exam shortcut
+
+> `~>` = **allow updates, but stay within the specified compatibility boundary.**
+
+---
+
+# 5. Why Provider Versioning Matters
+
+Imagine your Terraform code works today with:
+
+```text
+AWS Provider 5.x
+```
+
+Six months later, someone runs:
+
+```bash
+terraform init
+```
+
+and gets:
+
+```text
+AWS Provider 6.x
+```
+
+If there are breaking changes, the same Terraform code might stop working.
+
+That's why we use:
+
 ```hcl
-provider "aws" {
-  region = "ap-south-1"
+version = "~> 5.0"
+```
+
+---
+
+# 6. Dependency Lock File
+
+Terraform creates:
+
+```text
+.terraform.lock.hcl
+```
+
+### What does it do?
+
+The version constraint says:
+
+> "Which versions are allowed?"
+
+The lock file says:
+
+> "Which exact version did we actually select?"
+
+For example:
+
+```hcl
+provider "registry.terraform.io/hashicorp/aws" {
+  version     = "5.62.0"
+  constraints = "~> 5.0"
 }
 ```
-This doesn't just "select AWS" — it configures a specific, named **instance** of the AWS provider plugin (region, credentials, endpoints). You can configure **multiple instances of the same provider** using `alias` — this is the mechanism behind multi-region and multi-account Terraform, previewed in Domain 1 and covered fully in Domain 6.
 
-### AWS Provider Authentication — every method, ranked by real-world use
-```mermaid
-flowchart TD
-    A["Static keys hardcoded\nin provider block"] -->|"NEVER"| Z["Leak risk if committed"]
-    B["Environment variables\nAWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY"] -->|"CI/CD"| Y["Injected as pipeline secrets"]
-    C["Shared credentials file\n~/.aws/credentials + profile"] -->|"Local dev"| X["Per-developer, never committed"]
-    D["IAM role on compute\n(EC2 instance profile / CodeBuild / ECS task role)"] -->|"Best"| W["No credentials exist to leak at all"]
+So:
+
+```text
+Constraint
+   ↓
+~> 5.0
+   ↓
+Terraform selects
+   ↓
+5.62.0
+   ↓
+Lock file remembers it
 ```
 
-**Example 1 — local development (named profile):**
+### Why is this useful?
+
+Everyone can use the same provider version:
+
+```text
+Developer → 5.62.0
+CI        → 5.62.0
+Developer → 5.62.0
+```
+
+instead of:
+
+```text
+Developer → 5.62.0
+CI        → 5.70.0
+Developer → 5.65.0
+```
+
+---
+
+# 7. Provider Checksums
+
+The lock file also contains hashes/checksums.
+
+Think of a checksum as a **fingerprint of the provider binary**.
+
+Terraform can check:
+
+```text
+Downloaded provider
+        ↓
+Calculate hash
+        ↓
+Compare with lock file
+        ↓
+Match? → Use it
+No match? → Reject
+```
+
+This helps protect against a tampered/corrupted provider binary.
+
+### Exam takeaway
+
+> `.terraform.lock.hcl` stores the **selected provider version and hashes**.
+
+### Git rule
+
+```text
+.terraform.lock.hcl → ✅ Commit
+.terraform/         → ❌ Don't commit
+```
+
+---
+
+# 8. `terraform init` and Providers
+
+When you run:
+
+```bash
+terraform init
+```
+
+Terraform:
+
+* Reads `required_providers`
+* Finds the required provider
+* Determines the allowed version
+* Checks the lock file
+* Downloads the provider
+* Stores it under `.terraform/`
+* Creates/updates `.terraform.lock.hcl`
+
+### Important
+
+`terraform init` **doesn't create your infrastructure**.
+
+It prepares Terraform.
+
+```text
+terraform init
+      ↓
+Download AWS provider
+      ↓
+Terraform is ready
+```
+
+---
+
+# 9. Provider Authentication
+
+Terraform also needs credentials to access AWS.
+
+There are several ways.
+
+### Preferred order conceptually
+
+```mermaid
+flowchart TD
+    A["Static keys hardcoded<br/>in provider block"] -->|"NEVER"| Z["Leak risk if committed"]
+    B["Environment variables<br/>AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY"] -->|"CI/CD"| Y["Injected as pipeline secrets"]
+    C["Shared credentials file<br/>~/.aws/credentials + profile"] -->|"Local dev"| X["Per-developer, never committed"]
+    D["IAM role on compute<br/>(EC2 / CodeBuild / ECS)"] -->|"Best"| W["No long-lived credentials to manage"]
+```
+
+### For local development
+
+A common approach:
+
 ```hcl
 provider "aws" {
   region  = "ap-south-1"
-  profile = "terraform-dev"   # reads the [terraform-dev] section of ~/.aws/credentials
+  profile = "terraform-dev"
 }
 ```
 
-**Example 2 — CI/CD (environment variables, provider block stays bare):**
-```hcl
-provider "aws" {
-  region = "ap-south-1"
-  # no credentials arguments at all
-}
-```
+The profile points to credentials stored by AWS CLI.
+
+---
+
+# 10. AWS CLI Profile
+
+You can create a profile:
+
 ```bash
-export AWS_ACCESS_KEY_ID=$CI_SECRET_KEY_ID
-export AWS_SECRET_ACCESS_KEY=$CI_SECRET_ACCESS_KEY
-terraform apply -auto-approve
+aws configure --profile terraform-dev
 ```
 
-**Example 3 — Terraform running *on* AWS itself (instance profile, zero credentials anywhere):**
+Then Terraform uses:
+
+```hcl
+provider "aws" {
+  region  = "ap-south-1"
+  profile = "terraform-dev"
+}
+```
+
+Think:
+
+```text
+Terraform
+    ↓
+profile = terraform-dev
+    ↓
+~/.aws/credentials
+    ↓
+AWS credentials
+    ↓
+AWS
+```
+
+### Why use profiles?
+
+Useful when you have multiple accounts:
+
+```text
+personal
+terraform-dev
+staging
+production
+```
+
+You can switch which credentials Terraform uses without putting secrets in `.tf` files.
+
+---
+
+# 11. CI/CD Authentication
+
+For CI/CD, you generally don't want:
+
+```hcl
+provider "aws" {
+  access_key = "..."
+  secret_key = "..."
+}
+```
+
+Instead, credentials can be supplied through environment variables or, preferably, temporary credentials obtained through an IAM role/OIDC-based setup.
+
+Example:
+
 ```hcl
 provider "aws" {
   region = "ap-south-1"
-  # nothing here - the EC2 instance/CodeBuild project running this
-  # has an IAM role attached, and the AWS SDK inside the provider
-  # automatically discovers and uses those temporary credentials
 }
 ```
 
-**What if you hardcode static keys instead (the "never" branch above)?**
-```hcl
-provider "aws" {
-  access_key = "AKIAIOSFODNN7EXAMPLE"
-  secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-}
-```
-Beyond the leak risk (Domain 1's scenario), static keys also **don't rotate automatically** — if your security policy requires credential rotation every 90 days, hardcoded keys mean manually finding and updating every config that has them. Instance-profile-based auth (Example 3) rotates automatically, transparently, with zero code changes.
+Credentials are supplied outside the Terraform configuration.
 
-### Writing configuration with multiple *different* providers (Objective 2c)
-A second, purely-AWS variety of the multi-provider idea introduced in Domain 1 — combining the official `aws` provider with the `hashicorp/random` provider, a common real pattern for generating unique, collision-free resource names:
+### Remember
+
+```text
+Local machine → AWS profile
+CI/CD         → Environment/temporary credentials
+AWS compute   → IAM role
+```
+
+---
+
+# 12. Multiple Providers
+
+Terraform can use multiple **different providers** in the same configuration.
+
+Example:
+
+```text
+Terraform
+   |
+   +---- AWS Provider
+   |
+   +---- GitHub Provider
+   |
+   +---- Random Provider
+```
+
+For example:
+
 ```hcl
 terraform {
   required_providers {
-    aws    = { source = "hashicorp/aws", version = "~> 5.0" }
-    random = { source = "hashicorp/random", version = "~> 3.6" }
+    aws = {
+      source = "hashicorp/aws"
+    }
+
+    random = {
+      source = "hashicorp/random"
+    }
   }
 }
+```
 
-provider "aws" {
-  region = "ap-south-1"
-}
+Then:
 
+```hcl
 resource "random_id" "suffix" {
   byte_length = 4
 }
 
 resource "aws_s3_bucket" "logs" {
-  bucket = "my-app-logs-${random_id.suffix.hex}"   # globally-unique bucket name, guaranteed
+  bucket = "my-app-logs-${random_id.suffix.hex}"
 }
 ```
-**Why this matters:** S3 bucket names must be globally unique across *all* AWS accounts worldwide. Hardcoding `"my-app-logs"` will collide with someone else's bucket sooner or later. `random_id` solves this without a human ever having to invent a unique suffix by hand.
 
-### A Non-AWS Provider, Worked in Full: the GitHub Provider
-A genuinely useful, real-world non-AWS example — using Terraform to manage a GitHub repository and its branch protection, alongside the AWS infrastructure that repository's CI deploys to. This is a good teaching example specifically because it proves the provider-plugin architecture isn't a marketing claim: the exact same `apply`, dependency graph, and state file that manage EC2 instances also manage GitHub resources, with no special-casing.
+### Why use `random_id`?
 
-```hcl
-terraform {
-  required_providers {
-    github = {
-      source  = "integrations/github"
-      version = "~> 6.0"
-    }
-  }
-}
+S3 bucket names must be globally unique.
 
-provider "github" {
-  token = var.github_token   # a GitHub Personal Access Token — never hardcode this
-  owner = "my-org"
-}
+Instead of:
 
-resource "github_repository" "app_repo" {
-  name        = "my-app"
-  description = "Application source, deployed via the CI pipeline below"
-  visibility  = "private"
-  auto_init   = true
-}
-
-resource "github_branch_protection" "main" {
-  repository_id  = github_repository.app_repo.node_id
-  pattern        = "main"
-  required_status_checks {
-    strict   = true
-    contexts = ["ci/terraform-plan"]
-  }
-  required_pull_request_reviews {
-    required_approving_review_count = 1
-  }
-}
-```
-```hcl
-# variables.tf
-variable "github_token" {
-  type        = string
-  sensitive   = true
-  description = "GitHub PAT with repo + admin:repo_hook scopes"
-}
-```
-```bash
-# supplied via environment variable, never committed to .tfvars
-export TF_VAR_github_token="ghp_xxx..."
-terraform apply
+```text
+my-app-logs
 ```
 
-**Reading the resources:** `github_repository` is the repository itself (name, visibility, default branch behavior); `github_branch_protection` is a *separate* resource that locks down the `main` branch — requiring a passing CI check and at least one PR approval before a merge is allowed. Notice `repository_id = github_repository.app_repo.node_id` — an implicit dependency (Domain 4c) exactly like `subnet_id = aws_subnet.main.id` would be for AWS resources; Terraform's dependency-graph mechanism doesn't care that this is GitHub instead of AWS.
+you can get:
 
-**What if you manage the repository by hand instead (click "New Repository" in the GitHub UI)?** Branch protection rules, webhook configuration, and team access all become manually-configured, undocumented settings — exactly the same "configuration drift with no audit trail" problem Domain 1 describes for infrastructure, just applied to source control administration instead of servers.
+```text
+my-app-logs-a81f92bc
+```
 
-### Provider Aliasing — Multiple Configured Instances of the *Same* Provider (Objective 2c)
-Distinct from "two different providers" above: aliasing lets you configure the **same** provider more than once, each instance pointed at a different region, account, or credential set — the actual mechanism behind every "multi-region" or "multi-account" Terraform setup.
+So the random provider generates the unique part, while the AWS provider creates the bucket.
+
+### Important distinction
+
+**Multiple providers:**
+
+```text
+aws
+random
+github
+```
+
+Different plugins.
+
+---
+
+# 13. Provider Aliasing
+
+This is different from using multiple providers.
+
+Here we use the **same provider multiple times** with different configurations.
+
+### Example
 
 ```hcl
 provider "aws" {
-  region = "ap-south-1"   # the DEFAULT, un-aliased instance
+  region = "ap-south-1"
 }
 
 provider "aws" {
   alias  = "us_east"
   region = "us-east-1"
 }
+```
 
-resource "aws_instance" "primary" {
-  # no `provider =` argument -> uses the default (un-aliased) provider block above
-  ami           = data.aws_ami.primary_region.id
-  instance_type = "t3.micro"
-}
+Now we have:
 
-resource "aws_instance" "dr_standby" {
-  provider      = aws.us_east   # explicitly targets the aliased instance
-  ami           = data.aws_ami.dr_region.id
+```text
+AWS Provider
+   |
+   +---- Default → ap-south-1
+   |
+   +---- us_east → us-east-1
+```
+
+A resource can explicitly choose the aliased provider:
+
+```hcl
+resource "aws_instance" "dr" {
+  provider = aws.us_east
+
+  ami           = "ami-123"
   instance_type = "t3.micro"
 }
 ```
-**The rule to internalize:** any resource that omits `provider = ` always uses the default, un-aliased provider block for that provider type. You only ever need `provider = aws.<alias>` on the specific resources that must use a *non-default* configured instance. Forgetting this argument on a resource that was meant to be aliased is a common, silent mistake — the resource simply gets created in the wrong region/account instead of failing loudly, because the default provider block is still perfectly valid, just not the one you intended.
 
-**What if you don't use aliasing, and instead duplicate the entire configuration per region/account** (a full separate directory, copy-pasted, one per region)? You now have two (or more) codebases to keep in sync by hand — a bug fix or a new required tag has to be manually applied to every copy, and they inevitably drift apart over time. Aliasing keeps one codebase, with the region/account distinction expressed as data (which provider instance a resource targets), not as a fork of the code itself.
+### Very important rule
 
-### Real-World Scenario 3 — Multi-Region Disaster Recovery via Aliasing
-An e-commerce company runs its primary infrastructure in `ap-south-1` and maintains a warm standby in `us-east-1` for disaster recovery. Using two aliased `aws` provider blocks in one configuration, the same module (VPC, ASG, RDS read replica) is called twice — once against the default provider, once with `providers = { aws = aws.us_east }` — from one codebase. When the primary region has an outage, promoting the standby is a variable change and an `apply`, not a scramble to hand-build a second region's infrastructure from memory.
+If you don't specify:
 
-### Real-World Scenario 4 — Forgetting the `provider =` Argument
-An engineer adds a new S3 bucket resource to a config that has both a default (`ap-south-1`) and an aliased (`eu-central-1`, for EU-only regulated data) AWS provider. They intend the new bucket to hold EU customer data, but forget to add `provider = aws.eu_central`. `terraform apply` succeeds without any error — the bucket is simply created in `ap-south-1`, the default region, silently violating the company's data-residency requirement. This is discovered weeks later during a compliance audit, not by Terraform, because omitting `provider =` is valid, ordinary syntax, not a mistake Terraform can detect on your behalf.
+```hcl
+provider = aws.us_east
+```
+
+Terraform uses the **default AWS provider**.
+
+So:
+
+```hcl
+resource "aws_instance" "server" {
+  ...
+}
+```
+
+uses:
+
+```text
+default AWS provider
+```
+
+while:
+
+```hcl
+resource "aws_instance" "server" {
+  provider = aws.us_east
+  ...
+}
+```
+
+uses:
+
+```text
+us_east provider
+```
+
+### Exam takeaway
+
+> **Different providers → multiple provider types.**
+> **Provider alias → multiple configurations of the same provider.**
 
 ---
 
-## 5. How Terraform Uses and Manages State (Objective 2d)
+# 14. Why Provider Aliases Are Useful
 
-### What the state file is, precisely
-`terraform.tfstate` is a JSON file that is Terraform's **only** record of what it has created and how each block in your `.tf` files maps to a real-world resource ID.
+Suppose your application runs in:
+
+```text
+ap-south-1
+```
+
+and DR is in:
+
+```text
+us-east-1
+```
+
+Instead of duplicating the entire Terraform project:
+
+```text
+project-india/
+project-us/
+```
+
+you can have:
+
+```text
+One Terraform project
+       |
+       +---- AWS default → India
+       |
+       +---- AWS alias → US
+```
+
+This keeps the infrastructure definition in one codebase.
+
+---
+
+# 15. Terraform State
+
+Now the most important concept of Domain 2.
+
+Terraform maintains a state file:
+
+```text
+terraform.tfstate
+```
+
+### What is state?
+
+State is Terraform's record of:
+
+> **Which real infrastructure resources correspond to the resources in my Terraform configuration.**
+
+Example:
+
+```text
+main.tf
+
+aws_instance.web
+       |
+       ↓
+terraform.tfstate
+       |
+       ↓
+i-0abc123
+       |
+       ↓
+Real EC2 instance
+```
+
+### Mermaid
 
 ```mermaid
 flowchart LR
-    A["main.tf: resource aws_instance.web"] -.->|"tracked via"| B["terraform.tfstate:\naws_instance.web -> i-0abc123,\nall its attributes"]
+    A["main.tf:<br/>resource aws_instance.web"] -.->|"tracked via"| B["terraform.tfstate:<br/>aws_instance.web → i-0abc123"]
     B -.->|"maps to"| C["Real EC2 instance in AWS"]
 ```
 
-**What's actually stored:** every attribute of every resource, including ones you never explicitly set (auto-generated ARNs, default values assigned by AWS) — and critically, **all of it in plaintext**, regardless of whether a corresponding output is marked `sensitive` (full detail + the modern fix, ephemeral values, is in Domain 4c).
+---
 
-### What if there were no state file?
-Terraform would have to either (a) query every possible AWS resource on every `plan` to guess what it might have created before (impossibly slow and ambiguous), or (b) have no way at all to know `aws_instance.web` in your code *is* `i-0abc123` in AWS — every `apply` would just create a new instance. State is not an implementation detail you can ignore; it's the mechanism that makes "declarative, idempotent" possible at all.
+# 16. Why Does Terraform Need State?
 
-### Desired State vs. Current State — the exact comparison `plan` performs
-| | Desired State | Current State |
-|---|---|---|
-| Lives in | Your `.tf` files | The real infrastructure |
-| Recorded as | — | Cached in `terraform.tfstate`, refreshed by default on every `plan`/`apply` |
+Imagine your code says:
 
-`terraform plan` is really a **three-way comparison**: your `.tf` config (desired) vs. the last-recorded state vs. the real infrastructure right now (fetched via a refresh). This is why manual console changes get *flagged*, not silently accepted:
+```hcl
+resource "aws_instance" "web" {
+  ...
+}
+```
 
-**Worked example:**
-1. Config says: `instance_type = "t3.small"` (desired)
-2. State last recorded: `t3.micro` (from the last apply)
-3. Someone changed it in the AWS Console to `t3.medium` (drift — real world diverged from state)
+Terraform needs to know:
 
-Run `terraform plan`:
-- Terraform refreshes → discovers AWS actually has `t3.medium`
-- Compares real `t3.medium` against desired `t3.small`
-- **Proposes:** change `t3.medium` → `t3.small`
+> "Which actual EC2 instance is `aws_instance.web`?"
 
-**Terraform never treats a manual console change as the new desired state.** Your `.tf` files are always the source of truth; drift is something `plan` surfaces and offers to correct, not something it silently adopts.
+State remembers that relationship:
 
-### `terraform refresh`
+```text
+aws_instance.web
+       ↓
+i-0abc123
+```
+
+Without this mapping, Terraform wouldn't have the same reliable record of which real resource corresponds to the configuration.
+
+### Simple example
+
+First apply:
+
+```text
+main.tf
+   ↓
+Create EC2
+   ↓
+i-123
+   ↓
+Save mapping in state
+```
+
+Second apply:
+
+```text
+main.tf
+   ↓
+State says aws_instance.web = i-123
+   ↓
+Terraform knows the resource already exists
+```
+
+---
+
+# 17. Desired State vs Current State
+
+This is another very important concept.
+
+### Desired State
+
+What your Terraform code says you **want**.
+
+Example:
+
+```hcl
+instance_type = "t3.small"
+```
+
+### Current State
+
+What actually exists in AWS.
+
+Example:
+
+```text
+EC2 = t3.medium
+```
+
+Terraform compares them.
+
+```text
+Desired
+t3.small
+   |
+   | compare
+   ↓
+Current
+t3.medium
+```
+
+Terraform then proposes a change.
+
+---
+
+# 18. Configuration Drift
+
+**Drift = real infrastructure has changed outside Terraform.**
+
+Example:
+
+Terraform says:
+
+```text
+t3.small
+```
+
+Someone manually changes the EC2 through AWS Console:
+
+```text
+t3.medium
+```
+
+Now:
+
+```text
+Terraform desired → t3.small
+AWS actual        → t3.medium
+```
+
+That's **configuration drift**.
+
+When Terraform refreshes and runs a plan, it can detect the difference and propose bringing AWS back to the desired configuration.
+
+### Important
+
+Terraform doesn't say:
+
+> "Someone changed AWS manually, so I'll make t3.medium the new desired state."
+
+Your Terraform code remains the desired state.
+
+---
+
+# 19. `terraform plan` — What is Really Happening?
+
+Conceptually:
+
+```text
+        Terraform Code
+        Desired State
+              |
+              ↓
+        Compare with
+              |
+              ↓
+      Real Infrastructure
+        Current State
+              |
+              ↓
+        What changed?
+              |
+              ↓
+       Create a plan
+```
+
+Example:
+
+```text
+.tf says       → t3.small
+AWS currently  → t3.medium
+
+Plan:
+~ change t3.medium → t3.small
+```
+
+`~` means modify.
+
+---
+
+# 20. Terraform Refresh
+
+Refresh means:
+
+> Update Terraform's understanding of the real infrastructure.
+
+Historically you could run:
+
 ```bash
 terraform refresh
 ```
-Updates the state file to match real infrastructure, **without** changing any actual resource and without a full plan/apply cycle. Since Terraform 0.15.4+, `plan`/`apply` already refresh automatically by default (`-refresh=false` skips it) — but understand the standalone command conceptually; it's still exam-tested.
 
-**What if you never refresh (or always pass `-refresh=false`)?** Terraform's plan will be computed against a *stale* recollection of reality. If someone changed something in the console last week and you've been running `-refresh=false` ever since, your `plan` output could be actively wrong — proposing "no changes" when the real infrastructure has actually drifted, or vice versa.
+Conceptually:
 
-### Real-World Scenario 1 — Debugging "Terraform says no changes, but production is broken"
-A team disables refresh in CI (`-refresh=false`) to speed up pipeline runs. A junior engineer manually edits a security group rule in the console during an incident, forgetting to update the Terraform code. For weeks, `terraform plan` reports "no changes needed" — because it's comparing against stale state, not reality. The drift is only discovered when a completely unrelated `apply` (which *does* refresh) suddenly proposes reverting the manual fix, confusing everyone about why "nothing changed" suddenly wants to change something.
+```text
+AWS
+ ↓
+Read current resource information
+ ↓
+Update Terraform state
+```
 
-### Real-World Scenario 2 — Multi-Person Team Discovers a Duplicate Resource
-Two engineers, unaware of each other, each write `.tf` code to create "the" application security group, in two different Terraform root modules that don't share state. Both `apply` successfully — because Terraform state is scoped per root module/workspace, not global to the AWS account, nothing warns them. AWS now has two functionally-identical security groups, and neither engineer's Terraform config knows the other exists. This is why Domain 6/7 (remote state, state inspection, `terraform_remote_state`) matter — state must be a **shared**, discoverable source of truth across a team, not implicitly siloed per laptop.
+It **doesn't itself modify the AWS resource**.
+
+### Important modern behavior
+
+`terraform plan` and `terraform apply` normally refresh information automatically.
+
+So you generally don't need to manually run:
+
+```bash
+terraform refresh
+```
+
+every time.
+
+### Exam concept
+
+Understand what **refresh means**:
+
+> **Refresh updates Terraform's state information from the real infrastructure.**
 
 ---
 
-## 6. Practice Questions
+# 21. State Is Not Global
 
-### Easy
-1. Where does Terraform Core get its AWS-specific knowledge from?
-2. What's the difference in trust level between an "Official" and a "Community" tier provider?
-3. Which file records the exact resolved provider version (with hashes) after `terraform init`?
+This is a useful concept.
 
-### Medium
-4. Write a `required_providers` block allowing any `hashicorp/aws` version from `4.50.0` up to (but not including) `5.0.0`.
-5. Explain why an S3 bucket name generated with `random_id` avoids a class of errors that a hardcoded bucket name would eventually hit.
-6. A team disables refresh in CI for speed. Describe a concrete scenario where this causes `terraform plan` to report incorrect information.
+Terraform state belongs to a particular Terraform configuration/state scope.
 
-### Hard
-7. Compare the security posture of three AWS authentication methods (hardcoded static keys, environment variables in CI, and an EC2 instance profile) in terms of what happens if the CI server or EC2 instance is compromised.
-8. Two engineers unknowingly create duplicate security groups because their Terraform projects don't share state. Propose two different fixes — one process-based, one architectural — that would have caught this before both `apply`s succeeded.
+Imagine:
+
+```text
+Engineer A
+   ↓
+Terraform Project A
+   ↓
+State A
+```
+
+and:
+
+```text
+Engineer B
+   ↓
+Terraform Project B
+   ↓
+State B
+```
+
+Both could potentially create similar AWS resources because Terraform doesn't have one global state file for the entire AWS account.
+
+That's why teams eventually use **shared/remote state**.
+
+You don't need to go deeply into remote state yet.
 
 ---
-**Next:** [03-domain3-core-workflow.md](03-domain3-core-workflow.md)
+
+# 22. Important File Comparison
+
+| File                  | Purpose                                         |
+| --------------------- | ----------------------------------------------- |
+| `.tf` files           | Desired infrastructure                          |
+| `.terraform.lock.hcl` | Provider version/checksum lock                  |
+| `.terraform/`         | Local Terraform/provider files                  |
+| `terraform.tfstate`   | Terraform's mapping/record of managed resources |
+
+### Easy mental model
+
+```text
+main.tf
+   ↓
+"What I WANT"
+
+terraform.tfstate
+   ↓
+"What Terraform KNOWS about what exists"
+
+AWS
+   ↓
+"What ACTUALLY EXISTS"
+```
+
+---
+
+# 23. The Full Domain 2 Mental Model
+
+This is the diagram I'd keep in your notes:
+
+```mermaid
+flowchart TD
+    A["Terraform Configuration<br/>.tf files"] --> B["Terraform Core"]
+
+    B --> C["Provider"]
+    C --> D["AWS / GitHub / Azure / etc. API"]
+
+    B --> E["terraform.tfstate"]
+
+    D --> F["Real Infrastructure"]
+
+    E -. "tracks/maps" .-> F
+
+    G[".terraform.lock.hcl"] --> B
+    H[".terraform/"] --> B
+```
+
+Think of it as:
+
+```text
+.tf files
+   ↓
+Desired state
+   ↓
+Terraform Core
+   ↓
+Provider
+   ↓
+Platform API
+   ↓
+Real infrastructure
+
+Terraform state
+   ↓
+Keeps track of the relationship
+between Terraform resources and
+real infrastructure
+```
+
+---
+
+# 24. Domain 2 — What You Actually Need to Remember
+
+## Providers
+
+* Provider = plugin that communicates with an external platform.
+* Terraform Core does **not** contain AWS-specific logic.
+* `hashicorp/aws` → AWS provider.
+* Provider is downloaded during `terraform init`.
+
+## Provider tiers
+
+```text
+Official → HashiCorp
+Partner → Verified third party
+Community → Community maintained
+Archived → No longer maintained
+```
+
+## Versioning
+
+```hcl
+version = "~> 5.0"
+```
+
+* `= 5.31.0` → exact version
+* `>= 5.0` → 5.0 or newer
+* `~> 5.0` → stay within 5.x
+* `~> 5.31` → stay within 5.31.x
+
+## Lock file
+
+```text
+.terraform.lock.hcl
+```
+
+* Records selected provider version.
+* Contains hashes/checksums.
+* Helps reproducibility and integrity.
+* **Commit it to Git.**
+
+## Authentication
+
+```text
+Local → AWS profile
+CI/CD → environment/temporary credentials
+AWS compute → IAM role
+```
+
+* Avoid hardcoded credentials.
+
+## Multiple providers
+
+```text
+AWS Provider
++
+GitHub Provider
++
+Random Provider
+```
+
+Different provider types can work in one Terraform configuration.
+
+## Provider aliases
+
+Same provider, different configuration:
+
+```text
+aws.default → ap-south-1
+aws.us_east → us-east-1
+```
+
+Use:
+
+```hcl
+provider = aws.us_east
+```
+
+to select the aliased configuration.
+
+## State
+
+```text
+terraform.tfstate
+```
+
+* Maps Terraform resources to real infrastructure.
+* Helps Terraform determine what already exists.
+* Used when determining what changes are required.
+* Don't confuse **desired state** (`.tf`) with **state** (`terraform.tfstate`).
+
+## Drift
+
+```text
+Terraform says → t3.small
+AWS actually   → t3.medium
+```
+
+That's **configuration drift**.
+
+---
+
+## Commands to remember
+
+```text
+terraform init
+      ↓
+Initialize + download providers
+
+terraform plan
+      ↓
+Preview changes
+
+terraform apply
+      ↓
+Make changes
+
+terraform destroy
+      ↓
+Remove managed resources
+```
+
+### One-line memory trick
+
+> **Provider talks to AWS. Lock file locks the provider. State tracks the resources. `.tf` defines what you want.**
+
+This version is much better suited to **learning + Terraform Associate revision** than the original notes, while retaining the Mermaid diagrams where they actually help.
