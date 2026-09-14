@@ -1,31 +1,178 @@
-# Domain 4 (Part C) — Dependencies, Lifecycle Meta-Arguments, Custom Validation, Sensitive Data & Vault
+# Domain 4C — Dependencies, Lifecycle, Validation & Secrets
 
-*Official exam objectives covered: 4f (Define resource dependencies), 4g (Validate configuration using custom conditions), 4h (Sensitive data best practices, including Vault)*
-*Course lectures folded in: Resource Behavior and Meta Arguments, Meta-Argument LifeCycle (Create Before Destroy, Prevent Destroy, Ignore Changes), Challenges with Count, Resource Dependency, Implicit vs Explicit Dependencies, Overview of Input Variable Validation, Preconditions and Postconditions, Check Blocks, Moved Blocks, Sensitive Parameter, HashiCorp Vault Overview & Integration, Ephemeral Values and Write-Only Arguments*
+## What this domain covers
+
+This domain covers four major areas:
+
+1. **Resource dependencies**
+
+   * Implicit dependencies
+   * Explicit dependencies using `depends_on`
+
+2. **Lifecycle behavior**
+
+   * `create_before_destroy`
+   * `prevent_destroy`
+   * `ignore_changes`
+
+3. **Configuration validation**
+
+   * Variable validation
+   * Preconditions
+   * Postconditions
+   * `check` blocks
+
+4. **Resource refactoring and secrets**
+
+   * `moved` blocks
+   * `sensitive`
+   * HashiCorp Vault
+   * Ephemeral values
+   * Write-only arguments
 
 ---
 
-## 1. Resource Dependencies (Objective 4f)
+# 1. Resource Dependencies
 
-### The core idea
-Terraform builds a **dependency graph** before doing anything — this graph determines the order resources are created, updated, and destroyed in. Every resource has dependencies whether you wrote them explicitly or not; there are exactly two ways that graph gets built.
+## Why do dependencies matter?
 
-### Implicit Dependencies (the default, preferred mechanism)
-Created automatically whenever one resource's argument references another resource's attribute.
-```hcl
+Terraform doesn't simply execute your `.tf` files from top to bottom.
+
+Instead, Terraform builds a **dependency graph**.
+
+The graph tells Terraform:
+
+> "Resource B depends on Resource A, so A must be available before B can be created."
+
+For example:
+
+```hcl id="b8xk5f"
 resource "aws_instance" "web" {
   ami = var.ami_id
 }
 
 resource "aws_eip" "web_ip" {
-  instance = aws_instance.web.id   # implicit dependency
+  instance = aws_instance.web.id
   domain   = "vpc"
 }
 ```
-Terraform infers: "create `aws_instance.web` first, because `aws_eip.web_ip` needs its `id`." No ordering instruction was ever written explicitly — the reference *is* the dependency declaration, and it's automatically kept correct if the code is refactored (rename the resource, and every reference to it updates together, or fails loudly if you miss one).
 
-### Explicit Dependencies (`depends_on`) — for the cases implicit references can't cover
-```hcl
+The EIP uses:
+
+```hcl id="w9jv0e"
+aws_instance.web.id
+```
+
+Therefore Terraform understands:
+
+```text id="n0h2w9"
+EC2 instance
+     ↓
+EIP
+```
+
+The EC2 instance has to exist first because Terraform needs its ID.
+
+There are two ways Terraform knows about dependencies:
+
+```text id="t2z6d0"
+1. Implicit dependency
+2. Explicit dependency
+```
+
+---
+
+# 2. Implicit Dependencies
+
+## What is an implicit dependency?
+
+An implicit dependency is created automatically when one resource references an attribute of another resource.
+
+Example:
+
+```hcl id="d8t7fs"
+resource "aws_instance" "web" {
+  ami           = var.ami_id
+  instance_type = "t3.micro"
+}
+
+resource "aws_eip" "web_ip" {
+  instance = aws_instance.web.id
+  domain   = "vpc"
+}
+```
+
+The important line is:
+
+```hcl id="9kq3c1"
+instance = aws_instance.web.id
+```
+
+Terraform sees the reference and automatically creates the dependency:
+
+```text id="5ghpab"
+aws_instance.web
+       ↓
+aws_eip.web_ip
+```
+
+So Terraform creates the instance first and then the EIP.
+
+### You don't need:
+
+```hcl id="y3qk4u"
+depends_on = [aws_instance.web]
+```
+
+because the reference already tells Terraform about the dependency.
+
+---
+
+## Why is this called "implicit"?
+
+Because **you never explicitly told Terraform about the dependency**.
+
+You simply wrote the value that one resource needs:
+
+```hcl id="r4b4zh"
+aws_instance.web.id
+```
+
+Terraform inferred the dependency from that reference.
+
+---
+
+## Exam rule
+
+If Terraform can determine the dependency from a resource attribute reference:
+
+> **Prefer the implicit dependency.**
+
+It is clearer because the relationship is visible directly in the configuration.
+
+---
+
+# 3. Explicit Dependencies — `depends_on`
+
+Sometimes there is a dependency that Terraform **cannot discover from resource arguments**.
+
+This happens when the dependency exists because of some external/runtime behavior rather than a direct attribute reference.
+
+In that situation, use:
+
+```hcl id="kqyt7c"
+depends_on = [...]
+```
+
+---
+
+## Example
+
+Suppose an EC2 instance has an IAM role.
+
+An IAM policy must be attached to that role before the application starts.
+
+```hcl id="k3nq1v"
 resource "aws_iam_role_policy" "s3_access" {
   role   = aws_iam_role.app.id
   policy = data.aws_iam_policy_document.s3_read.json
@@ -35,47 +182,179 @@ resource "aws_instance" "app" {
   ami           = var.ami_id
   instance_type = "t3.micro"
 
-  # Nothing in THIS resource's arguments references the IAM policy attributes —
-  # but the app's boot script (user_data) assumes the IAM policy is already
-  # attached to the instance's role before it starts, and there's no
-  # attribute of the policy this resource could reference to create that link.
-  depends_on = [aws_iam_role_policy.s3_access]
+  depends_on = [
+    aws_iam_role_policy.s3_access
+  ]
 }
 ```
 
-```mermaid
+The EC2 configuration itself might not contain an attribute such as:
+
+```hcl id="s3x7dr"
+policy = aws_iam_role_policy.s3_access.something
+```
+
+But there is still a real operational requirement:
+
+```text id="8o9f8p"
+IAM policy attached
+       ↓
+EC2 application starts
+```
+
+Terraform cannot infer that requirement simply from the arguments.
+
+So we explicitly tell Terraform:
+
+```hcl id="pjw6t5"
+depends_on = [aws_iam_role_policy.s3_access]
+```
+
+---
+
+# Implicit vs Explicit
+
+```mermaid id="zq8r1k"
 flowchart TD
     subgraph Implicit["Implicit - via attribute reference"]
       A1["aws_instance.web"] -->|"id used by"| A2["aws_eip.web_ip"]
     end
+
     subgraph Explicit["Explicit - via depends_on only"]
       B1["aws_iam_role_policy.s3_access"] -.->|"depends_on"| B2["aws_instance.app"]
     end
 ```
 
-### The rule of thumb, and what happens if you get it backwards
-**Prefer implicit dependencies whenever a real attribute reference is possible** — they're self-documenting (anyone reading the code sees the relationship) and Terraform maintains them automatically through refactors. Reserve `depends_on` for genuine hidden ordering requirements where **no** attribute reference exists to express the relationship.
+### Simple distinction
 
-**What if you overuse `depends_on`** (adding it defensively "just in case," even where an attribute reference would work)? The dependency becomes invisible in the actual data flow — a future reader has to go hunting through `depends_on` lists scattered across the codebase to understand why two resources are ordered the way they are, instead of seeing it directly in an argument. Overuse also risks creating dependency cycles that are harder to diagnose than reference-based ones, since `terraform graph` (Domain 3) visualizes reference-based edges more intuitively than a list of resource addresses.
+**Implicit:**
 
-**What if you skip a genuinely-needed `depends_on`** (assuming Terraform will "figure it out")? Terraform has no way to know about a runtime assumption baked into a boot script — it will happily create the EC2 instance and the IAM policy in parallel (or in an arbitrary order), and if the instance boots before the policy attaches, the application fails at startup with permission errors that look like an application bug, not an infrastructure ordering bug.
+```hcl id="q1h7vb"
+instance = aws_instance.web.id
+```
 
-### Real-World Scenario 1 — Application Boot Order
-A company's EC2 instances run a startup script that immediately tries to read a config file from S3, requiring the instance's IAM role to already have `s3:GetObject` permission. Without an explicit `depends_on` linking the instance to the IAM role policy attachment, Terraform sometimes (depending on API timing, not code logic) creates the instance and grants the policy in parallel — occasionally the instance boots first, the app fails to read its config, and it crash-loops until someone manually restarts it after the policy actually takes effect. Adding `depends_on = [aws_iam_role_policy.app]` makes the ordering deterministic every single time.
+Terraform automatically understands the dependency.
 
-### Real-World Scenario 2 — Refactoring Safety via Implicit Dependencies
-A team renames `aws_instance.web` to `aws_instance.app_server` as part of a larger refactor. Because every other resource that needed to reference it used **implicit** references (`aws_instance.app_server.id`, after the rename), Terraform's `plan` correctly shows the updated dependency graph automatically — the *only* manual work is the rename itself, not re-wiring a scattered set of `depends_on` lists that would have needed the exact same rename applied in multiple places, easy to miss one.
+**Explicit:**
+
+```hcl id="2h1s8x"
+depends_on = [aws_iam_role_policy.s3_access]
+```
+
+You explicitly tell Terraform about a dependency that isn't visible through an attribute reference.
 
 ---
 
-## 2. Meta-Arguments and the `lifecycle` Block
+# Which one should you prefer?
 
-### What meta-arguments are
-`count`, `for_each`, `provider`, `depends_on`, and `lifecycle` are understood by **Terraform Core itself**, regardless of resource type — that's why they behave identically whether you're configuring `aws_instance` or `aws_s3_bucket`. Core applies them before ever handing control to the provider plugin.
+### Prefer implicit dependencies
 
-### `create_before_destroy`
-**What it changes:** Terraform's default behavior when a change forces replacement is destroy-then-create — meaning a window of downtime. This flips the order.
-```hcl
+When possible:
+
+```hcl id="7od5g0"
+subnet_id = aws_subnet.public.id
+```
+
+is better than:
+
+```hcl id="r0qj3z"
+subnet_id = "subnet-123456"
+depends_on = [aws_subnet.public]
+```
+
+The reference itself tells Terraform exactly what value is needed and therefore why the dependency exists.
+
+### Use `depends_on` when the dependency is hidden
+
+For example:
+
+```text id="j6a9st"
+Application startup
+       ↓
+assumes IAM policy already attached
+```
+
+but there is no direct attribute reference connecting the two.
+
+---
+
+## Exam trap: don't add `depends_on` everywhere
+
+You might think:
+
+> "I'll just add `depends_on` to everything to be safe."
+
+Don't.
+
+If Terraform can already infer the dependency, adding `depends_on` is usually unnecessary.
+
+The configuration becomes harder to understand because someone reading the code has to search through `depends_on` declarations to figure out why resources are ordered that way.
+
+### Mental model
+
+> **Reference when you can. `depends_on` when you must.**
+
+---
+
+# 4. Lifecycle Meta-Arguments
+
+Terraform normally decides how a resource should be changed.
+
+Sometimes, however, you need to control **how Terraform performs the change**.
+
+That's what the `lifecycle` block is for.
+
+Example:
+
+```hcl id="r6h7np"
+resource "aws_instance" "web" {
+
+  lifecycle {
+    # lifecycle settings
+  }
+}
+```
+
+The important lifecycle arguments in this domain are:
+
+```text id="i2s3jg"
+create_before_destroy
+prevent_destroy
+ignore_changes
+```
+
+---
+
+# 5. `create_before_destroy`
+
+## The problem
+
+Sometimes a change cannot be made in place.
+
+Terraform must:
+
+```text id="7x2v9q"
+destroy old resource
+create new resource
+```
+
+By default, replacement is generally:
+
+```text id="f4e9ce"
+Destroy old
+     ↓
+Create new
+```
+
+That can create a period of downtime.
+
+---
+
+## `create_before_destroy = true`
+
+This reverses the replacement order:
+
+```hcl id="t2h5qf"
 resource "aws_launch_template" "app" {
   name_prefix   = "app-"
   image_id      = var.ami_id
@@ -86,104 +365,525 @@ resource "aws_launch_template" "app" {
   }
 }
 ```
-```mermaid
+
+Terraform tries to:
+
+```text id="u9m6as"
+Create new
+     ↓
+Verify/complete new resource
+     ↓
+Destroy old
+```
+
+```mermaid id="0c8v3w"
 flowchart LR
     subgraph Default["Default: destroy then create"]
       D1["Destroy old"] --> D2["Create new"]
       Dgap["<- downtime window ->"]
     end
+
     subgraph CBD["create_before_destroy = true"]
       C1["Create new"] --> C2["Verify healthy"] --> C3["Destroy old"]
     end
 ```
-**Use it when:** the resource is a dependency other things rely on staying continuously available — a launch template feeding an autoscaling group, an EIP a DNS record points to.
-**What if you don't use it on a resource that genuinely needs it?** An AMI update on a launch template referenced by a live ASG (without `create_before_destroy`) destroys the old template *before* the new one exists — if the ASG tries to scale during that window, it has no valid template to launch from, a real availability gap during what should have been a routine update.
 
-### `prevent_destroy`
-```hcl
+---
+
+## When is this useful?
+
+Use it when the old resource needs to remain available until the replacement is ready.
+
+For example:
+
+```text id="w8n5eg"
+Old launch template
+        ↓
+ASG depends on it
+```
+
+If you destroy the old template first, there may temporarily be no valid template available.
+
+With:
+
+```hcl id="2x4zpf"
+create_before_destroy = true
+```
+
+Terraform creates the replacement first.
+
+---
+
+## Important limitation
+
+`create_before_destroy` does **not magically guarantee zero downtime** for every resource.
+
+It changes the replacement order.
+
+Whether zero downtime is actually possible depends on the resource and its dependencies.
+
+For the exam, remember:
+
+> **`create_before_destroy` = create replacement first, then destroy old resource.**
+
+---
+
+# 6. `prevent_destroy`
+
+## What does it do?
+
+`prevent_destroy` tells Terraform:
+
+> **"Do not allow this resource to be destroyed."**
+
+Example:
+
+```hcl id="qz1u9k"
 resource "aws_db_instance" "prod" {
-  # ...
+
   lifecycle {
     prevent_destroy = true
   }
 }
 ```
-Terraform **refuses**, with a hard error, to run any plan/apply that would destroy this resource — including a full `terraform destroy` on the whole config.
-**What if you don't set this on a production database?** A single mistaken `terraform destroy` (run against the wrong workspace, or by someone unfamiliar with the project) permanently deletes production data with no built-in safety net beyond "hopefully someone notices the plan output before confirming." `prevent_destroy` makes that mistake structurally impossible without a deliberate, separate code change first.
-**What if you set it on everything by default, including resources you'll legitimately decommission?** Removing a genuinely obsolete resource now requires first deleting the `lifecycle` block, applying that no-op change, and *then* deleting the resource — an extra deliberate step every time, which is the point for critical resources, but needless friction for disposable ones.
 
-### `ignore_changes`
-```hcl
-resource "aws_autoscaling_group" "app" {
-  # ...
-  lifecycle {
-    ignore_changes = [desired_capacity]
-  }
-}
+If a Terraform operation would destroy this database, Terraform produces an error instead of performing the destruction.
+
+This also protects against:
+
+```text id="a6f0s1"
+terraform destroy
 ```
-**What it solves:** an external autoscaling policy (or a Lambda-based scheduler) actively changes `desired_capacity` outside Terraform. Without `ignore_changes`, every single `terraform plan` proposes reverting it back to whatever's hardcoded in `.tf` — noisy, and actively dangerous if someone approves that "revert" during a legitimate high-traffic scaling event.
-**What if you set `ignore_changes = all` instead of scoping it to just `desired_capacity`?** Terraform becomes blind to *every* attribute's drift on that resource — including a security-relevant change (someone manually loosening a security group attached to it) that you'd actually want Terraform to catch and flag. Scope `ignore_changes` to exactly the attribute that's legitimately managed elsewhere, never broader.
 
-### Real-World Scenario 1 — Zero-Downtime AMI Rollout
-A platform team updates a launch template's AMI monthly. Because `create_before_destroy = true` is set, each monthly update creates the new launch template version, confirms it's valid, and only then removes the old one — the ASG never has a moment with zero valid template to scale from, even if a scale-out event happens to fire during the exact minute of the Terraform apply.
-
-### Real-World Scenario 2 — Autoscaling Fighting Terraform
-A team's ASG has its `desired_capacity` actively managed by a scheduled Lambda that scales up for business hours and down overnight. Without `ignore_changes = [desired_capacity]`, every daytime `terraform plan` (run as part of an unrelated change, like a tag update) proposes scaling the ASG back down to the value hardcoded in `.tf` — and if someone reflexively approves it during business hours, they've just manually undone the Lambda's scale-up, causing a real capacity incident.
+for that resource.
 
 ---
 
-## 3. Validate Configuration Using Custom Conditions (Objective 4g)
+## Why is this useful?
 
-This objective covers three distinct mechanisms, each solving a different part of "make sure this config is actually correct, not just syntactically valid."
+Production databases are a classic example.
 
-### 3.1 Input Variable Validation — checked before any resource action
-```hcl
-variable "instance_type" {
-  type = string
-  validation {
-    condition     = contains(["t3.micro", "t3.small", "t3.medium"], var.instance_type)
-    error_message = "instance_type must be one of: t3.micro, t3.small, t3.medium."
-  }
+You may want Terraform to manage the database but make accidental destruction much harder.
+
+```text id="c7b2q4"
+Production DB
+     ↓
+prevent_destroy = true
+     ↓
+Terraform refuses destructive operation
+```
+
+---
+
+## Important exam point
+
+`prevent_destroy` is not:
+
+> "Terraform will never destroy this resource under any circumstances."
+
+It means:
+
+> Terraform will refuse a plan that requires destruction **while that lifecycle rule exists**.
+
+If you deliberately remove the lifecycle rule from the configuration, you can then allow the resource to be destroyed.
+
+---
+
+## Exam memory
+
+```hcl id="6r9p1x"
+lifecycle {
+  prevent_destroy = true
 }
+```
 
-variable "vpc_cidr" {
-  type = string
-  validation {
-    condition     = can(cidrhost(var.vpc_cidr, 0))
-    error_message = "vpc_cidr must be a valid CIDR block, e.g. 10.0.0.0/16."
+means:
+
+> **Protect this resource from Terraform destruction.**
+
+---
+
+# 7. `ignore_changes`
+
+Sometimes another system intentionally changes an attribute that Terraform manages.
+
+That creates a problem.
+
+Suppose Terraform says:
+
+```hcl id="u6p1ya"
+desired_capacity = 3
+```
+
+but an external autoscaling mechanism changes it to:
+
+```text id="v6a8qt"
+desired_capacity = 10
+```
+
+Terraform sees the difference during the next plan:
+
+```text id="m4s1fv"
+Terraform configuration: 3
+Real infrastructure:      10
+```
+
+Terraform may propose changing it back to 3.
+
+But perhaps the external autoscaling system is **supposed** to control this value.
+
+---
+
+## `ignore_changes`
+
+You can tell Terraform to ignore changes to a specific attribute:
+
+```hcl id="a8r2qk"
+resource "aws_autoscaling_group" "app" {
+
+  lifecycle {
+    ignore_changes = [
+      desired_capacity
+    ]
   }
 }
 ```
-`can()` wraps an expression that might error and converts the result to a clean `true`/`false` — the standard idiom for "is this even a syntactically valid CIDR/ARN/etc."
 
-**What if you skip variable validation?** A typo'd instance type (`"t3.mico"`) or a malformed CIDR isn't caught until AWS itself rejects the API call during `apply` — a less friendly error, discovered later in the workflow, potentially after other resources in the same `apply` have already been created.
+Now Terraform doesn't try to revert external changes to `desired_capacity`.
 
-### 3.2 Preconditions and Postconditions — checked at the resource/data-source level
-```hcl
+---
+
+# Why should you scope `ignore_changes`?
+
+Avoid:
+
+```hcl id="f6k1rp"
+lifecycle {
+  ignore_changes = all
+}
+```
+
+unless there is a very specific reason.
+
+That effectively tells Terraform:
+
+> "Don't care about changes to this resource."
+
+You may then miss legitimate drift.
+
+For example, if another attribute changes unexpectedly, Terraform won't report it.
+
+### Better:
+
+```hcl id="4v7m3s"
+ignore_changes = [desired_capacity]
+```
+
+Only ignore the attribute that another system is intentionally managing.
+
+---
+
+# Lifecycle Cheat Sheet
+
+| Argument                | Meaning                                           |
+| ----------------------- | ------------------------------------------------- |
+| `create_before_destroy` | Create replacement before destroying old resource |
+| `prevent_destroy`       | Refuse to destroy the resource                    |
+| `ignore_changes`        | Ignore changes to specified attributes            |
+
+### Memory trick
+
+```text id="8j4p0m"
+create_before_destroy → ORDER
+prevent_destroy        → PROTECTION
+ignore_changes         → IGNORE DRIFT
+```
+
+---
+
+# 8. Custom Configuration Validation
+
+Terraform has multiple ways to validate configuration.
+
+The important ones are:
+
+```text id="f1u8ws"
+1. Variable validation
+2. Preconditions
+3. Postconditions
+4. Check blocks
+```
+
+They look similar, but they operate at different stages and have different purposes.
+
+---
+
+# 9. Variable Validation
+
+Variable validation checks whether an **input value** is acceptable.
+
+Example:
+
+```hcl id="0xq2rj"
+variable "instance_type" {
+  type = string
+
+  validation {
+    condition = contains(
+      ["t3.micro", "t3.small", "t3.medium"],
+      var.instance_type
+    )
+
+    error_message = "instance_type must be t3.micro, t3.small, or t3.medium."
+  }
+}
+```
+
+Now:
+
+```text id="u0e4s5"
+instance_type = "t3.micro"
+```
+
+is valid.
+
+But:
+
+```text id="8q2n9c"
+instance_type = "t3.mico"
+```
+
+is invalid.
+
+Terraform stops with the custom error message.
+
+---
+
+## Why use variable validation?
+
+Suppose you know your module only supports:
+
+```text id="u8x1b4"
+dev
+staging
+prod
+```
+
+You can enforce that:
+
+```hcl id="q8q5c3"
+variable "environment" {
+  type = string
+
+  validation {
+    condition = contains(
+      ["dev", "staging", "prod"],
+      var.environment
+    )
+
+    error_message = "environment must be dev, staging, or prod."
+  }
+}
+```
+
+This catches bad input before Terraform tries to create infrastructure.
+
+---
+
+# `can()` for validation
+
+Sometimes an expression itself might produce an error.
+
+For example, validating whether something is a valid CIDR.
+
+```hcl id="w0m7ty"
+variable "vpc_cidr" {
+  type = string
+
+  validation {
+    condition     = can(cidrhost(var.vpc_cidr, 0))
+    error_message = "vpc_cidr must be a valid CIDR block."
+  }
+}
+```
+
+`can()` essentially asks:
+
+> "Can Terraform successfully evaluate this expression?"
+
+If yes:
+
+```text id="j7h5j3"
+true
+```
+
+If evaluating it would produce an error:
+
+```text id="v5r8k2"
+false
+```
+
+This makes `can()` useful for validation.
+
+---
+
+# What does variable validation know?
+
+It knows about:
+
+```text id="s9g3e1"
+INPUT
+```
+
+It does **not** know the final generated attributes of a resource.
+
+For example, variable validation cannot check:
+
+```hcl id="5c8k3d"
+self.public_ip != ""
+```
+
+because the resource doesn't exist yet.
+
+That's where preconditions/postconditions come in.
+
+---
+
+# 10. Preconditions
+
+A **precondition** checks an assumption **before a resource action occurs**.
+
+Example:
+
+```hcl id="w6z0hf"
 resource "aws_instance" "web" {
   ami           = data.aws_ami.selected.id
   instance_type = var.instance_type
 
   lifecycle {
     precondition {
-      condition     = data.aws_ami.selected.architecture == "x86_64"
-      error_message = "Selected AMI must be x86_64, got ${data.aws_ami.selected.architecture}."
-    }
-    postcondition {
-      condition     = self.public_ip != ""
-      error_message = "Instance did not get a public IP - check subnet's map_public_ip_on_launch."
+      condition = data.aws_ami.selected.architecture == "x86_64"
+
+      error_message = "Selected AMI must be x86_64."
     }
   }
 }
 ```
-- **Precondition:** checked *before* the resource action — validates an assumption about an input or a data source's result.
-- **Postcondition:** checked *after* the resource is created/updated, using `self.<attribute>` — validates the **actual result**, catching a technically-successful apply that still didn't produce what you needed.
 
-**What can a postcondition check that a `variable { validation {} }` fundamentally cannot?** Variable validation only ever sees the *input* — it has no way to inspect a resource's own generated attributes, because those don't exist until the resource is actually created. `self.public_ip != ""` is only checkable *after* the instance exists — there is no equivalent check possible at the variable-declaration stage.
+Terraform checks:
 
-### 3.3 Check Blocks — standalone, ongoing assertions
-```hcl
+```text id="q7b5q1"
+Is the selected AMI x86_64?
+       |
+    YES → continue
+       |
+     NO → fail
+```
+
+The resource should not proceed if the assumption isn't satisfied.
+
+---
+
+## When do you use a precondition?
+
+Use it when you need to say:
+
+> "Before Terraform performs this resource action, this condition must be true."
+
+For example:
+
+```text id="k6v8g9"
+AMI architecture must be x86_64
+Subnet must belong to expected environment
+Input/data source must satisfy some requirement
+```
+
+---
+
+# 11. Postconditions
+
+A **postcondition** is checked **after the resource action**.
+
+This is important because now you can inspect the resource's resulting attributes.
+
+Example:
+
+```hcl id="0s8n4v"
+resource "aws_instance" "web" {
+  ami           = data.aws_ami.selected.id
+  instance_type = var.instance_type
+
+  lifecycle {
+    postcondition {
+      condition = self.public_ip != ""
+
+      error_message = "Instance did not receive a public IP."
+    }
+  }
+}
+```
+
+Here:
+
+```hcl id="1q5d7a"
+self.public_ip
+```
+
+refers to the resource's actual resulting attribute.
+
+Terraform can therefore check:
+
+> "Did the resource actually end up with a public IP?"
+
+---
+
+## Why can't variable validation do this?
+
+Variable validation happens before the resource exists.
+
+At that time:
+
+```text id="x7p8n5"
+aws_instance.web
+```
+
+doesn't have a generated public IP yet.
+
+A postcondition runs after the resource action, so:
+
+```hcl id="kw6v5m"
+self.public_ip
+```
+
+is available.
+
+### Key distinction
+
+```text id="q6n4w3"
+Variable validation
+    ↓
+Check INPUT
+
+Precondition
+    ↓
+Check ASSUMPTION before resource action
+
+Postcondition
+    ↓
+Check RESULT after resource action
+```
+
+---
+
+# 12. `check` Blocks
+
+A `check` block is a standalone assertion.
+
+Example:
+
+```hcl id="h7v2p1"
 check "web_is_reachable" {
+
   data "http" "web_health" {
     url = "https://${aws_lb.web.dns_name}/healthz"
   }
@@ -194,37 +894,117 @@ check "web_is_reachable" {
   }
 }
 ```
-Unlike pre/postconditions (tied to one resource's own lifecycle), `check` blocks run on **every** `plan`/`apply`, independent of any single resource — and critically, a **failed check produces a warning, not a hard failure** that blocks the apply. Built for ongoing health/compliance monitoring of infrastructure that already exists, not for gating creation.
 
-### Comparison table — when to reach for which
-| Mechanism | Checked when | Can inspect resource's own generated attributes? | Failure behavior |
-|---|---|---|---|
-| `variable { validation {} }` | Before any resource action, at plan time | No — inputs only | Hard failure, blocks plan |
-| `precondition` | Before this specific resource's action | Data sources, other resources — not this resource's own result yet | Hard failure, blocks apply |
-| `postcondition` | After this specific resource's action | Yes, via `self.*` | Hard failure, blocks apply |
-| `check` block | Every plan/apply, standalone | Yes, any resource/data source | **Warning only**, never blocks |
+The check asks:
 
-### Real-World Scenario 1 — Catching a Misconfigured Subnet Before It Causes an Outage
-A postcondition (`self.public_ip != ""`) on a public-facing EC2 instance catches, at apply-time, that someone forgot to enable `map_public_ip_on_launch` on the subnet it landed in — instead of the team discovering "the server has no public IP" only after deploying and then trying (and failing) to reach it externally.
-
-### Real-World Scenario 2 — Ongoing Compliance Monitoring via Check Blocks
-A compliance team adds a `check` block asserting every ACM certificate in a config has `status == "ISSUED"`. If a certificate silently expires or fails DNS validation renewal, the very next `terraform plan` (run for an unrelated change) surfaces a clear warning — proactive discovery, instead of finding out only when customers start seeing browser TLS warnings.
+```text id="y1q5a8"
+Does the health endpoint return HTTP 200?
+```
 
 ---
 
-## 4. Moved Blocks — Refactoring Without Destroy/Recreate
+## The important difference: `check` does not block the operation
 
-### What role a `moved` block plays
-Terraform identifies every resource by its **address** — the combination of resource type and local name (`aws_instance.web`), or its position inside a module (`module.vpc.aws_subnet.public`). That address is exactly what's used as the *key* in the state file. The moment you rename a resource, move it into a module, or restructure how a module is called, its address changes — and by default, Terraform has no way to know "this is the same real infrastructure, just renamed in code." It sees a brand-new address with no matching state entry, and a state entry with no matching config — which it interprets as **destroy the old one, create a new one with the new name**, even though nothing about the underlying AWS resource needed to change at all.
+A failed `check` produces a **warning** rather than a hard failure that prevents the plan/apply from proceeding.
 
-A `moved` block is the declarative fix: it tells Terraform "the thing at this old address is the same thing now living at this new address — update your bookkeeping, don't touch real infrastructure."
+This makes `check` useful for things like:
 
-### Example 1 — A Simple Rename
-```hcl
-# Before the refactor, this existed:
+* ongoing health checks
+* compliance checks
+* monitoring existing infrastructure
+
+rather than enforcing a strict prerequisite for creating one particular resource.
+
+---
+
+# Validation mechanisms compared
+
+| Mechanism           | When checked           | What can it inspect?            | Failure          |
+| ------------------- | ---------------------- | ------------------------------- | ---------------- |
+| Variable validation | Before resource action | Input variables                 | **Hard failure** |
+| `precondition`      | Before resource action | Inputs/data/other resources     | **Hard failure** |
+| `postcondition`     | After resource action  | Resource result via `self`      | **Hard failure** |
+| `check`             | Plan/apply             | Broad infrastructure assertions | **Warning**      |
+
+### Exam memory
+
+```text id="k9n4q8"
+Variable validation → Is my INPUT valid?
+Precondition        → Is my ASSUMPTION valid before action?
+Postcondition       → Is my RESULT valid after action?
+Check               → Is my infrastructure CONDITION healthy?
+```
+
+---
+
+# 13. Moved Blocks
+
+This is an important topic when refactoring Terraform code.
+
+## The problem
+
+Terraform identifies resources using **resource addresses**.
+
+For example:
+
+```hcl id="6j5p3m"
+resource "aws_instance" "web" {
+}
+```
+
+has the address:
+
+```text id="f1j7s9"
+aws_instance.web
+```
+
+Terraform uses this address when tracking the resource in state.
+
+Now suppose you rename it:
+
+```hcl id="m3c7x1"
+resource "aws_instance" "app_server" {
+}
+```
+
+The address has changed:
+
+```text id="3j8w5v"
+aws_instance.web
+        ↓
+aws_instance.app_server
+```
+
+But the actual EC2 instance in AWS hasn't changed.
+
+Terraform doesn't automatically know that:
+
+> "This is the same EC2 instance with a new Terraform address."
+
+Without additional information, Terraform may interpret this as:
+
+```text id="4q7n1x"
+old resource → destroy
+new resource → create
+```
+
+That is obviously bad.
+
+---
+
+# `moved` block
+
+A `moved` block tells Terraform:
+
+> "The resource previously known by this address is now known by this new address. Update the state address without recreating the infrastructure."
+
+Example:
+
+```hcl id="9z2h6r"
+# Old:
 # resource "aws_instance" "web" { ... }
 
-# After renaming it in code:
+# New:
 resource "aws_instance" "app_server" {
   ami           = var.ami_id
   instance_type = var.instance_type
@@ -235,130 +1015,872 @@ moved {
   to   = aws_instance.app_server
 }
 ```
-Run `terraform plan` after this change: instead of a `-` (destroy) and a `+` (create), the plan shows the resource being **moved** in state, with **zero** actual infrastructure changes — the same real EC2 instance, now tracked under its new address.
 
-### Example 2 — Moving a Resource Into a Module
-```hcl
+Terraform now understands:
+
+```text id="4u1r5v"
+aws_instance.web
+       ↓
+same real EC2 instance
+       ↓
+aws_instance.app_server
+```
+
+---
+
+## What does `terraform plan` show?
+
+Instead of:
+
+```text id="w5x2q0"
+- destroy aws_instance.web
++ create aws_instance.app_server
+```
+
+Terraform recognizes the move.
+
+There is **no real infrastructure replacement**.
+
+The state address changes.
+
+---
+
+# Moving a resource into a module
+
+`moved` is also useful when reorganizing your configuration.
+
+Suppose you originally have:
+
+```text id="1g9c3q"
+aws_instance.web
+```
+
+Then you move the resource into:
+
+```text id="7f2k5m"
+module.web_tier.aws_instance.web
+```
+
+Use:
+
+```hcl id="3v6s1d"
 moved {
   from = aws_instance.web
   to   = module.web_tier.aws_instance.web
 }
 ```
-This is the exact scenario for "I started with a flat root module and I'm now organizing things into a proper module structure" (Domain 5) — without a `moved` block, promoting existing resources into a new module structure would destroy and recreate every single one of them.
 
-### What if you rename or restructure a resource *without* a `moved` block?
-```
-Plan: 1 to add, 0 to change, 1 to destroy.
-
-  # aws_instance.web will be destroyed
-  - resource "aws_instance" "web" { ... }
-
-  # aws_instance.app_server will be created
-  + resource "aws_instance" "app_server" { ... }
-```
-For a stateless resource, this might just be wasteful (a few minutes of downtime, a new instance ID). For something with real, hard-to-recreate state of its own — an RDS database, an EBS volume with data on it, an EIP other systems point at by address — this is a genuine, avoidable outage or data-loss risk caused purely by a cosmetic code rename, not by any actual infrastructure requirement.
-
-### `moved` blocks vs. `terraform state mv` — the same outcome, two very different processes
-| | `moved` block | `terraform state mv` |
-|---|---|---|
-| Where it lives | Committed in `.tf` code | A one-time CLI command, run manually |
-| Reviewable in a pull request? | Yes | No — it's an action, not code |
-| Runs automatically for every teammate | Yes, on their next `plan` | No — everyone with a copy of that state must run the command themselves |
-| Leaves a record of *why* the move happened | Yes (it's in Git history, can have a comment) | Only if someone separately documents it |
-
-**Recommendation:** prefer `moved` blocks for anything going into version control (the standard case). Reserve manual `terraform state mv` for one-off, immediate fixes to a state file that isn't (yet) reflected by a corresponding code change — e.g., emergency state surgery during an incident.
-
-### Real-World Scenario 1 — A Module Refactor Across a Team
-A platform team decides to reorganize a large, flat root module into three sub-modules (`network`, `compute`, `database`) for clarity, without wanting to actually recreate any of dozens of existing production resources. They add a `moved` block for every resource that's relocating into a module. When each team member next runs `terraform plan` on their own checkout, Terraform automatically reconciles their local understanding of state with the new module structure — no one has to manually run `state mv` themselves, and no one accidentally skips a resource and triggers a surprise destroy/recreate.
-
-### Real-World Scenario 2 — Renaming a Resource to Match a New Naming Convention
-A company adopts a new resource-naming standard company-wide (e.g., `<tier>_<app>` instead of ad hoc names). Renaming `aws_db_instance.db` to `aws_db_instance.app_primary_db` across dozens of Terraform projects, with a `moved` block accompanying each rename, means the migration produces a `plan` showing zero real infrastructure changes across the entire fleet — purely a bookkeeping update — instead of every single renamed database resource being flagged for destroy-and-recreate, which for an RDS instance would mean real, unacceptable data loss.
+Terraform understands that the existing resource has simply moved into the module.
 
 ---
 
-## 5. Managing Sensitive Data (Objective 4h)
+# What happens without `moved`?
 
-### The `sensitive` flag — on both variables and outputs
-```hcl
+Terraform can see:
+
+```text id="4g8v2j"
+old address exists in state
+new address exists in configuration
+```
+
+and may propose:
+
+```text id="7m2k9x"
+1 to add
+1 to destroy
+```
+
+Even though the actual infrastructure doesn't need to change.
+
+This is particularly dangerous for:
+
+* databases
+* EBS volumes
+* production servers
+* resources containing persistent data
+
+A simple code refactor should not cause infrastructure destruction.
+
+---
+
+# `moved` vs `terraform state mv`
+
+There are two ways to move a resource in Terraform state.
+
+|                                     | `moved` block      | `terraform state mv`         |
+| ----------------------------------- | ------------------ | ---------------------------- |
+| Method                              | Declarative code   | CLI command                  |
+| Stored in Git                       | Yes                | No                           |
+| Reviewable                          | Yes                | No                           |
+| Automatically applies for teammates | Yes                | No                           |
+| Good for                            | Normal refactoring | One-off/manual state surgery |
+
+### Exam-friendly answer
+
+If the question asks how to safely rename or reorganize a resource **as part of configuration code**, think:
+
+```text id="u8x4p0"
+moved
+```
+
+---
+
+# 14. Sensitive Data
+
+Terraform often needs to handle secrets such as:
+
+```text id="f3v9x2"
+Database passwords
+API tokens
+Private keys
+Credentials
+```
+
+Terraform provides:
+
+```hcl id="g8y1r5"
+sensitive = true
+```
+
+---
+
+# `sensitive = true`
+
+Example:
+
+```hcl id="j4s7k0"
 variable "db_password" {
   type      = string
   sensitive = true
 }
+```
 
+You can also mark outputs:
+
+```hcl id="p8c2v6"
 output "db_password" {
   value     = aws_db_instance.main.password
   sensitive = true
 }
 ```
-**What this actually does:** redacts the value from CLI output during `plan`/`apply`, and from log output. **What it does NOT do:** encrypt anything. The real value is still written, in **plaintext**, into `terraform.tfstate` — `sensitive` is a display-layer protection only.
 
-**What if you rely on `sensitive = true` as your *only* protection for a database password?** Anyone with read access to the state file (an S3 bucket with loose IAM permissions, a laptop with a local `terraform.tfstate` file, a backup that leaked) can read the real password directly — `sensitive` never crossed their path at all, since it only affects the CLI's own display logic, not the file Terraform writes to disk.
+---
 
-### The real fix, part 1 — HashiCorp Vault
-Vault is a **separate HashiCorp product** dedicated to storing/generating secrets (static secrets, dynamic short-lived database credentials, PKI certificates) with fine-grained access policies and full audit logging.
-```hcl
+# What does `sensitive = true` actually do?
+
+It tells Terraform:
+
+> **Don't display this value normally in CLI output.**
+
+For example, instead of displaying the actual password during plan/apply, Terraform redacts it.
+
+This protects against accidentally exposing the secret through:
+
+```text id="c9m1q7"
+terraform plan
+terraform apply
+logs
+```
+
+---
+
+# What `sensitive` DOES NOT do
+
+This is one of the most important exam traps.
+
+`sensitive = true` **does not encrypt the value in the state file**.
+
+The secret can still be stored in:
+
+```text id="n2v6p1"
+terraform.tfstate
+```
+
+So:
+
+```text id="h4x9q3"
+sensitive = true
+       ↓
+Hidden from normal CLI output
+       ↓
+NOT automatically removed from state
+```
+
+---
+
+## Why is this important?
+
+Suppose the state file contains:
+
+```json id="m3x8q1"
+{
+  "password": "ActualSecret123"
+}
+```
+
+Even if the Terraform variable was:
+
+```hcl id="q7w2k5"
+sensitive = true
+```
+
+someone who has access to the state file may still be able to retrieve the real value.
+
+Therefore:
+
+> **Protecting Terraform state is extremely important.**
+
+---
+
+# 15. HashiCorp Vault
+
+Vault is a HashiCorp product designed specifically for **secrets management**.
+
+It can store or generate:
+
+* passwords
+* API credentials
+* certificates
+* dynamic credentials
+* other sensitive information
+
+Vault provides features such as:
+
+```text id="p7n2d5"
+Centralized secret storage
+Access policies
+Secret rotation
+Audit logging
+Dynamic/short-lived credentials
+```
+
+---
+
+## Reading a secret from Vault
+
+Terraform can use a Vault data source:
+
+```hcl id="r5q1z7"
 data "vault_generic_secret" "db_creds" {
   path = "secret/data/myapp/db"
 }
+```
 
+Then use it:
+
+```hcl id="w9k3s2"
 resource "aws_db_instance" "main" {
   username = data.vault_generic_secret.db_creds.data["username"]
   password = data.vault_generic_secret.db_creds.data["password"]
 }
 ```
-**Important nuance:** even reading a secret from Vault this way, the value still ends up in Terraform state — Vault changes **where the secret is authored, rotated, and audited**, and can issue **dynamic**, short-lived credentials that limit the damage of any single leak, but it does not, by itself, erase the state-file exposure problem.
 
-### The real fix, part 2 — Ephemeral Values and Write-Only Arguments (Terraform 1.10+)
-This is the mechanism that actually closes the state-file gap:
-```hcl
+The flow is:
+
+```text id="f7p3m8"
+Vault
+  ↓
+Terraform reads secret
+  ↓
+Terraform uses secret
+  ↓
+AWS database
+```
+
+---
+
+# Important Vault limitation
+
+Vault improves **secret management**, but simply reading a secret from Vault does **not automatically solve Terraform state exposure**.
+
+If Terraform receives the secret and stores it as a normal resource argument, it may still end up in state.
+
+So:
+
+```text id="e8s4q1"
+Vault
+   ↓
+better storage / rotation / access control
+   ↓
+BUT
+   ↓
+secret may still appear in Terraform state
+```
+
+Vault and Terraform state protection solve different problems.
+
+---
+
+# 16. Ephemeral Values
+
+Newer Terraform versions provide **ephemeral values** for information that should exist only during a Terraform operation.
+
+Example:
+
+```hcl id="z3w7p5"
 variable "db_password" {
   type      = string
-  ephemeral = true   # exists only for this run - never written to state
+  ephemeral = true
+}
+```
+
+The idea is:
+
+> The value exists while Terraform needs it, but Terraform doesn't persist it in state.
+
+This is fundamentally different from:
+
+```hcl id="j5q8r2"
+sensitive = true
+```
+
+because `sensitive` only controls display.
+
+---
+
+# `sensitive` vs `ephemeral`
+
+### `sensitive`
+
+```hcl id="s1d7q4"
+sensitive = true
+```
+
+means:
+
+```text id="r8m3k2"
+Hide from CLI
+       ↓
+Still may be stored in state
+```
+
+### `ephemeral`
+
+```hcl id="c5n9v1"
+ephemeral = true
+```
+
+means:
+
+```text id="k7q2m6"
+Use during run
+       ↓
+Don't persist in state
+```
+
+This makes ephemeral values much stronger for avoiding state-file exposure.
+
+---
+
+# 17. Write-Only Arguments
+
+Some resources support **write-only arguments** for secrets.
+
+A write-only argument allows Terraform to send a value to the provider/resource without storing that actual value in Terraform state.
+
+Example:
+
+```hcl id="v6p2q9"
+variable "db_password" {
+  type      = string
+  ephemeral = true
 }
 
 resource "aws_db_instance" "main" {
-  password_wo         = var.db_password   # write-only argument - never stored in state either
-  password_wo_version = 1                 # bump this to signal "the value changed, please apply"
+  password_wo         = var.db_password
+  password_wo_version = 1
 }
 ```
-- **Ephemeral** variables/outputs exist only for the duration of a single `plan`/`apply` run and are never persisted to state at all.
-- **Write-only arguments** (suffixed `_wo`, must be specifically supported by the resource/provider) let a resource *consume* a secret to configure something without that value ever being written into state — paired with a `_wo_version` counter, since Terraform can't diff a value it never stores.
 
-### The full comparison, in order of actual protection strength
-| Approach | Hides from CLI output? | Removed from plaintext state? | Rotation support |
-|---|---|---|---|
-| Plain variable, no `sensitive` | No | No | Manual |
-| `sensitive = true` | Yes | **No** | Manual |
-| Vault-sourced secret (static) | Yes (if also `sensitive`) | No — still lands in state | Centralized, auditable |
-| Vault-sourced **dynamic** credential | Yes | No — still lands in state | Automatic, short-lived |
-| `ephemeral` variable + write-only argument | Yes | **Yes** | N/A — never persisted at all |
+The important argument is:
 
-### Real-World Scenario 1 — A Leaked State File, Two Different Outcomes
-Company A stores a database password as a plain `sensitive` variable; their state file (accidentally made world-readable in an S3 misconfiguration) is discovered by a security researcher, who extracts the real plaintext password directly from the JSON. Company B used `ephemeral` + `password_wo` for the same secret; the same S3 misconfiguration exposes their state file too — but the password was **never written into it in the first place**, so there's nothing to extract. Identical infrastructure mistake (a public state bucket), completely different real-world consequence, purely because of which secret-handling mechanism was used.
+```hcl id="d9x4s7"
+password_wo
+```
 
-### Real-World Scenario 2 — Rotating a Database Password Without a Terraform Diff Nightmare
-A security policy requires database passwords to rotate every 90 days. With a plain `sensitive` variable, rotating means changing the variable's value, which Terraform diffs as "changing this attribute" — and if any other resource happens to depend on that same value, a cascading, sometimes destructive plan can result. With `password_wo` + `password_wo_version`, rotation is: supply the new password, bump `password_wo_version` from `1` to `2`. Terraform applies the new secret because the version counter changed, without ever being able to diff (and therefore never risking mishandling) the actual secret content itself.
+The `_wo` means the value is treated as **write-only**.
+
+Terraform can use it to configure the resource but doesn't retain the actual secret value in state.
 
 ---
 
-## 6. Practice Questions
+# Why is `_wo_version` needed?
 
-### Easy
-1. What's the practical difference between an implicit and an explicit dependency?
-2. Which `lifecycle` argument would you use to stop Terraform from ever destroying a specific resource, even via `terraform destroy`?
-3. True/False: `sensitive = true` on a variable encrypts its value in the state file.
-4. What does a `moved` block prevent Terraform from doing to a renamed resource, that would otherwise happen by default?
+This is a subtle but important concept.
 
-### Medium
-5. Write a `variable "environment"` block that only accepts `"dev"`, `"staging"`, or `"prod"`, with a clear error message for anything else.
-6. An ASG's `desired_capacity` is actively managed by a scheduled Lambda outside Terraform. Write the `lifecycle` block that stops every `plan` from fighting that, without blinding Terraform to every other attribute's drift on that resource.
-7. Explain, with an example, when you'd need a `postcondition` instead of a `variable { validation {} }` block — specifically, what can a postcondition check that variable validation cannot.
-8. Compare a `moved` block to `terraform state mv` for the same rename — which one automatically takes effect for every teammate's next `plan`, and why does that matter for a team of five engineers sharing one remote state file?
+Normally Terraform compares:
 
-### Hard
-9. Explain precisely why marking a `variable` as `sensitive = true` does not protect its value if an attacker gains read access to your state-file storage, and how `ephemeral` variables plus write-only arguments close that specific gap differently than `sensitive` does.
-10. A team removes one contractor's name from the middle of a `count`-based `aws_iam_user` list. Trace exactly what happens to IAM users positioned after the removed one, explain why this endangers their already-issued access keys, and show the `for_each`-based fix.
-11. A team is migrating a production `aws_db_instance` from a flat root module into `module.database`. Write the `moved` block that makes this a zero-downtime, no-op-on-real-infrastructure change, and explain exactly what the `plan` output would show if they forgot it.
+```text id="f1q7m3"
+old value
+vs
+new value
+```
+
+to determine whether something changed.
+
+But with a write-only secret:
+
+```text id="a8s2k6"
+Terraform does NOT store the old secret.
+```
+
+So how can Terraform know that you want to update it?
+
+You provide a version:
+
+```hcl id="w4n9c3"
+password_wo_version = 1
+```
+
+Later, when the password rotates:
+
+```hcl id="p6r1t8"
+password_wo_version = 2
+```
+
+Terraform sees:
+
+```text id="h3v7q5"
+version 1
+   ↓
+version 2
+```
+
+and knows:
+
+> "The write-only secret needs to be sent again."
+
+It doesn't need to know the actual secret value.
 
 ---
-**Next:** [07-domain5-modules.md](07-domain5-modules.md)
+
+# Secret Protection Comparison
+
+| Method                            |                  Hidden from CLI? | Stored in plaintext state? | Main benefit                      |
+| --------------------------------- | --------------------------------: | -------------------------: | --------------------------------- |
+| Normal variable                   |                                 ❌ |                        Yes | None                              |
+| `sensitive = true`                |                                 ✅ |                    **Yes** | Hides CLI output                  |
+| Vault static secret               | Usually with sensitivity controls |           **May still be** | Centralized secret management     |
+| Vault dynamic secret              |      Yes when handled sensitively |           **May still be** | Short-lived credentials           |
+| `ephemeral` + write-only argument |                                 ✅ |                     **No** | Avoids persisting secret in state |
+
+### Most important distinction
+
+```text id="z5p3w8"
+sensitive
+   ↓
+Hides the SECRET
+
+ephemeral + write-only
+   ↓
+Avoids PERSISTING the SECRET
+```
+
+---
+
+# Complete Mental Model
+
+```text id="j8m4q2"
+DEPENDENCIES
+────────────────────────────
+
+Attribute reference
+        ↓
+Implicit dependency
+
+No attribute reference but real ordering requirement
+        ↓
+depends_on
+
+
+LIFECYCLE
+────────────────────────────
+
+create_before_destroy
+        ↓
+Create NEW → Destroy OLD
+
+prevent_destroy
+        ↓
+DO NOT destroy
+
+ignore_changes
+        ↓
+Ignore selected external changes
+
+
+VALIDATION
+────────────────────────────
+
+variable validation
+        ↓
+Check INPUT
+
+precondition
+        ↓
+Check BEFORE resource action
+
+postcondition
+        ↓
+Check AFTER resource action
+
+check
+        ↓
+Ongoing assertion / warning
+
+
+REFACTORING
+────────────────────────────
+
+Rename / move resource
+        ↓
+moved block
+        ↓
+Change Terraform address
+without recreating infrastructure
+
+
+SECRETS
+────────────────────────────
+
+sensitive
+        ↓
+Hide from CLI
+BUT state may contain value
+
+Vault
+        ↓
+Centralized secret management
+
+ephemeral + write-only
+        ↓
+Secret can be used
+without persisting it in state
+```
+
+---
+
+# Exam Cheat Sheet
+
+### Dependencies
+
+```hcl id="0h4p8r"
+subnet_id = aws_subnet.public.id
+```
+
+→ **Implicit dependency**
+
+```hcl id="6n3q1w"
+depends_on = [aws_iam_role_policy.app]
+```
+
+→ **Explicit dependency**
+
+**Remember:**
+
+> Attribute reference if possible; `depends_on` when the dependency is otherwise hidden.
+
+---
+
+### Lifecycle
+
+```hcl id="8k5v2m"
+lifecycle {
+  create_before_destroy = true
+}
+```
+
+→ New first, old second.
+
+```hcl id="q7s1x4"
+lifecycle {
+  prevent_destroy = true
+}
+```
+
+→ Refuse destruction.
+
+```hcl id="m9c3j6"
+lifecycle {
+  ignore_changes = [desired_capacity]
+}
+```
+
+→ Ignore changes to that specific attribute.
+
+---
+
+### Validation
+
+```text id="4f7p2q"
+variable validation
+        ↓
+Input
+
+precondition
+        ↓
+Before resource
+
+postcondition
+        ↓
+After resource
+
+check
+        ↓
+Warning / ongoing assertion
+```
+
+### Critical difference
+
+> **Postcondition can inspect `self.*` because the resource has already been created/updated.**
+
+---
+
+### `moved`
+
+```hcl id="r2v8k5"
+moved {
+  from = aws_instance.web
+  to   = aws_instance.app_server
+}
+```
+
+→ Terraform understands it's the **same real resource with a new address**.
+
+Without it:
+
+```text id="n6q1s3"
+old address → destroy
+new address → create
+```
+
+With it:
+
+```text id="x4m7p2"
+state address changes
+real infrastructure → unchanged
+```
+
+---
+
+### Secrets
+
+```hcl id="a9k3w6"
+sensitive = true
+```
+
+→ Hide from CLI.
+
+**Does NOT mean encrypted or removed from state.**
+
+```hcl id="p5r1v8"
+ephemeral = true
+```
+
+→ Don't persist the value.
+
+```hcl id="c7n2q4"
+password_wo = var.db_password
+```
+
+→ Write-only secret argument.
+
+```hcl id="h8s3m1"
+password_wo_version = 2
+```
+
+→ Tell Terraform the write-only value changed.
+
+---
+
+# High-Value Exam Questions to Practice
+
+### 1. Dependency
+
+If:
+
+```hcl
+instance = aws_instance.web.id
+```
+
+what type of dependency is this?
+
+**Answer:** Implicit.
+
+---
+
+### 2. Hidden dependency
+
+An EC2 startup script requires an IAM policy to be attached first, but there is no resource attribute reference connecting them.
+
+What should you use?
+
+**Answer:**
+
+```hcl id="k2w7p9"
+depends_on = [aws_iam_role_policy.app]
+```
+
+---
+
+### 3. Replacement order
+
+You want Terraform to create a replacement before destroying the old resource.
+
+**Answer:**
+
+```hcl id="m4q8s1"
+create_before_destroy = true
+```
+
+---
+
+### 4. Protect a database
+
+You never want Terraform to destroy a production database accidentally.
+
+**Answer:**
+
+```hcl id="v6n3r7"
+prevent_destroy = true
+```
+
+---
+
+### 5. External system controls one attribute
+
+An external scheduler controls ASG `desired_capacity`, and Terraform shouldn't constantly revert it.
+
+**Answer:**
+
+```hcl id="x8p2k5"
+ignore_changes = [desired_capacity]
+```
+
+Not:
+
+```hcl id="q4m7s9"
+ignore_changes = all
+```
+
+unless you intentionally want Terraform to ignore everything.
+
+---
+
+### 6. Validate input
+
+You only allow:
+
+```text
+dev
+staging
+prod
+```
+
+Use:
+
+```hcl id="f1w5c8"
+validation {
+  condition = contains(
+    ["dev", "staging", "prod"],
+    var.environment
+  )
+
+  error_message = "Must be dev, staging, or prod."
+}
+```
+
+---
+
+### 7. Validate resource result
+
+You need to verify that an EC2 instance actually received a public IP.
+
+Use a:
+
+**postcondition**
+
+because:
+
+```hcl id="s9v3n6"
+self.public_ip
+```
+
+is a result of the resource.
+
+---
+
+### 8. Rename without recreation
+
+You renamed:
+
+```text id="z7q1m4"
+aws_instance.web
+```
+
+to:
+
+```text id="b3p8k5"
+aws_instance.app_server
+```
+
+How do you prevent destroy/recreate?
+
+**Answer:**
+
+```hcl id="r6x2v9"
+moved {
+  from = aws_instance.web
+  to   = aws_instance.app_server
+}
+```
+
+---
+
+### 9. Sensitive data
+
+True or False:
+
+> `sensitive = true` encrypts the secret in `terraform.tfstate`.
+
+**Answer: FALSE.**
+
+It primarily prevents the value from being displayed normally in Terraform CLI output.
+
+---
+
+### 10. Stronger secret protection
+
+You need to use a secret without persisting its value in Terraform state.
+
+Think:
+
+```text id="k4n7q2"
+ephemeral
++
+write-only argument
+```
+
+---
+
+# Final Memory Trick
+
+If you remember only this before the exam:
+
+> **Implicit = Terraform sees the reference.**
+> **`depends_on` = Terraform needs you to tell it.**
+>
+> **create_before_destroy = NEW first.**
+> **prevent_destroy = DON'T delete.**
+> **ignore_changes = DON'T manage this attribute.**
+>
+> **Variable validation = check input.**
+> **Precondition = check before.**
+> **Postcondition = check after.**
+> **Check block = warning/ongoing assertion.**
+>
+> **`moved` = same infrastructure, new Terraform address.**
+>
+> **`sensitive` = hide the secret from CLI.**
+> **Vault = manage secrets centrally.**
+> **`ephemeral` + write-only = don't persist the secret in state.**
