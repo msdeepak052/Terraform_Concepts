@@ -32,7 +32,7 @@ cd Terraform_Practise/16.Practise_Sets/Q7
 git pull                       # pull latest from origin (GitHub) into current branch
 terraform fmt
 git add -A                     # stage everything
-git commit -m "Q5 Module VPC Added"        # commit staged changes
+git commit -m "Q7 Workspace handson Added"        # commit staged changes
 git push                       # pushes current branch to BOTH GitHub and GitLab
 
 
