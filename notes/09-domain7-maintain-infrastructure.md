@@ -1,28 +1,185 @@
 # Domain 7 — Maintain Infrastructure with Terraform
 
-*Official exam objectives covered: 7a (Import existing infrastructure), 7b (Use the CLI to inspect state), 7c (When and how to use verbose logging)*
-*Course lectures folded in: Overview of Terraform Import, Terraform Import Practical, Terraform State Management (state list/show/mv/rm/pull), Cross-Project Collaboration using Remote State Data Source, Remote State Data Source Practical, Overview of Debugging in Terraform, Debugging Terraform Practical*
+## What this domain covers
+
+This domain is about maintaining infrastructure that may already exist, inspecting Terraform state, sharing information between Terraform projects, and troubleshooting Terraform when normal error messages aren't enough.
+
+The official exam objectives are:
+
+* **7a — Import existing infrastructure**
+* **7b — Use the CLI to inspect state**
+* **7c — Know when and how to use verbose logging**
+
+The source also covers:
+
+* Terraform import
+* `terraform state` commands
+* `terraform_remote_state`
+* Terraform debugging
+* `TF_LOG` and `TF_LOG_PATH` 
 
 ---
 
-## 1. Importing Existing Infrastructure (Objective 7a)
+# 1. Importing Existing Infrastructure
 
-### What it is and why it's needed
-Not every real resource starts life inside Terraform. Companies adopting Terraform mid-flight, resources created by another tool, or infrastructure clicked into place years ago by someone who's since left — all of this genuinely exists in AWS but is completely invisible to Terraform until it's **imported**.
+## Why do we need `terraform import`?
+
+Not all infrastructure is originally created by Terraform.
+
+For example, imagine an AWS S3 bucket was created manually:
+
+```text
+AWS Console
+     │
+     ▼
+S3 bucket
+my-existing-bucket
+```
+
+Now your team wants Terraform to manage it.
+
+Terraform currently doesn't know about this bucket.
+
+Its state might look like:
+
+```text
+terraform.tfstate
+└── No aws_s3_bucket.existing
+```
+
+You can use **`terraform import`** to tell Terraform:
+
+> "This existing real-world resource corresponds to this Terraform resource address."
+
+---
+
+## Basic syntax
+
+```bash
+terraform import <terraform-resource-address> <real-resource-id>
+```
+
+Example:
 
 ```bash
 terraform import aws_s3_bucket.existing my-existing-bucket-name
 ```
 
-### What this command actually does — and critically, what it does NOT do
-`terraform import` only updates the **state file** — it adds a mapping from `aws_s3_bucket.existing` to the real bucket's ID. It does **not** generate the matching `.tf` configuration for you (in older Terraform versions) — you must hand-write a `resource "aws_s3_bucket" "existing" {}` block yourself, or use the newer generation feature:
+
+
+Here:
+
+```text
+aws_s3_bucket.existing
+        │
+        │ maps to
+        ▼
+my-existing-bucket-name
+```
+
+---
+
+# 2. VERY IMPORTANT: What `terraform import` Does NOT Do
+
+This is a major exam concept.
+
+When you run:
+
+```bash
+terraform import aws_s3_bucket.existing my-existing-bucket-name
+```
+
+Terraform adds the resource to **state**.
+
+It does **not traditionally mean**:
+
+> "Terraform will automatically write the complete `.tf` configuration for me."
+
+Think:
+
+```text
+Existing AWS resource
+        │
+        │ terraform import
+        ▼
+Terraform state
+```
+
+But you still need appropriate Terraform configuration:
+
+```text
+Existing AWS resource
+        │
+        ▼
+terraform.tfstate
+        +
+matching .tf configuration
+        │
+        ▼
+Terraform manages it correctly
+```
+
+
+
+---
+
+# 3. Generating Configuration
+
+The source also covers the newer configuration-generation capability:
+
 ```bash
 terraform plan -generate-config-out=generated.tf
 ```
-which scaffolds a starting `.tf` file from the real resource's current attributes (Terraform 1.5+).
 
-### The essential step people skip: verifying with `plan` afterward
-```mermaid
+This can generate a starting `.tf` configuration based on the imported resource's current attributes.
+
+So you can think of the process as:
+
+```text
+Existing infrastructure
+        │
+        ▼
+terraform import
+        │
+        ▼
+Resource added to state
+        │
+        ▼
+Write/generate .tf configuration
+        │
+        ▼
+terraform plan
+```
+
+The generated configuration is a **starting point**. You still need to review it.
+
+---
+
+# 4. The Most Important Step After Import: `terraform plan`
+
+A successful import does **not** mean you're finished.
+
+After importing:
+
+```bash
+terraform import aws_s3_bucket.existing my-existing-bucket-name
+```
+
+you should run:
+
+```bash
+terraform plan
+```
+
+Why?
+
+Because Terraform needs to determine whether your `.tf` configuration actually represents the resource's current reality.
+
+---
+
+## Complete import workflow
+
+```mermaid id="k3c7qa"
 flowchart LR
     A["Resource created manually\n(console/CLI/another tool)"] -->|"terraform import"| B["Added to state file ONLY"]
     C["You write/generate matching\n.tf resource block"] --> D["terraform plan"]
@@ -30,35 +187,158 @@ flowchart LR
     D -->|"diff = 0"| E["Fully adopted, safe to manage going forward"]
     D -->|"diff != 0"| F["Adjust CONFIG (not the resource) to match reality, re-plan"]
 ```
-After import, run `terraform plan`. If your written config doesn't **exactly** match the real resource's actual settings, Terraform proposes changes to reconcile them — your job is to adjust the *configuration* until the diff disappears, not to assume import alone means the resource is safely managed.
 
-### What if you stop after the `import` command succeeds, without checking `plan`?
-This is the single most common import mistake. Suppose the real S3 bucket has versioning enabled, but your hand-written config omits the `versioning` block entirely (assuming it defaults to "off," which isn't what's actually configured). The **very next** `terraform apply` — for a completely unrelated change, weeks later — silently disables versioning on that bucket, because Terraform now believes "no versioning block" means "versioning should be off," and there's nothing in your config contradicting that. The bug was introduced at import time but only surfaces later, disguised as an unrelated change's side effect.
+The ideal result is:
 
-### Real-World Scenario 1 — Migrating a Company's Manually-Created Infrastructure
-A company that spent three years manually managing AWS via the console decides to adopt Terraform. Rather than recreating everything from scratch (which would mean destroying and rebuilding production infrastructure — unacceptable), they import each existing resource one at a time: VPC, subnets, security groups, EC2 instances, RDS databases. For each one: import, write matching config, run `plan`, adjust config until the diff is zero, then move to the next resource. This is slow and methodical by design — a rushed import (skip the `plan` verification step) risks the exact drift-reintroduction bug described above, at company-wide scale.
+```text
+terraform import
+       ↓
+terraform plan
+       ↓
+No unexpected changes
+```
 
-### Real-World Scenario 2 — Adopting a Resource Created by a Different Team's Script
-A legacy Python deployment script created an SNS topic years ago; nobody remembers its exact configuration details. The team imports it, then uses `terraform plan -generate-config-out=generated.tf` to scaffold the starting configuration directly from AWS's own record of the resource's current settings — far more reliable than trying to reverse-engineer the original script's intent from old, possibly-outdated internal documentation.
+
 
 ---
 
-## 2. Using the CLI to Inspect State (Objective 7b)
+# 5. Why Is `plan` After Import So Important?
 
-### The core commands
-```bash
-terraform state list                                  # every resource address currently in state
-terraform state show aws_instance.web                  # one resource's full attribute set
-terraform state mv aws_instance.web aws_instance.app    # rename in state WITHOUT destroy/recreate
-terraform state rm aws_instance.web                     # stop tracking it (does NOT destroy the real resource)
-terraform state pull > backup.tfstate                   # download the current state to a local file
+Suppose an existing S3 bucket has:
+
+```text
+Versioning = ENABLED
 ```
 
-### Example 1 — diagnosing "why does Terraform want to recreate this?"
+You import it.
+
+But your Terraform configuration doesn't describe the existing versioning configuration correctly.
+
+Terraform may later interpret your configuration as saying:
+
+> "Versioning should not be enabled."
+
+Then a future:
+
+```bash
+terraform apply
+```
+
+could potentially make an unwanted change.
+
+The important lesson is:
+
+> **Import brings the resource into state. `plan` verifies whether your configuration correctly represents that resource.**
+
+Don't assume:
+
+```text
+import successful
+      =
+Terraform configuration is correct
+```
+
+They are not the same thing.
+
+
+
+---
+
+# 6. Importing Infrastructure During Terraform Adoption
+
+Imagine a company has managed AWS manually for years:
+
+```text
+AWS Console
+   │
+   ├── VPC
+   ├── Subnets
+   ├── Security Groups
+   ├── EC2
+   └── RDS
+```
+
+Now the company wants Terraform.
+
+You generally don't want to destroy production and recreate everything.
+
+Instead, you can progressively adopt the infrastructure:
+
+```text
+Existing resource
+       │
+       ▼
+terraform import
+       │
+       ▼
+Write/generate configuration
+       │
+       ▼
+terraform plan
+       │
+       ├── Differences? → Fix configuration
+       │
+       └── No differences? → Adopted
+```
+
+This process can then be repeated resource by resource.
+
+---
+
+# 7. `terraform state` Commands
+
+Terraform provides the `terraform state` command for inspecting and manipulating Terraform's state.
+
+The core commands you should know are:
+
+```bash
+terraform state list
+terraform state show <resource>
+terraform state mv <source> <destination>
+terraform state rm <resource>
+terraform state pull
+```
+
+
+
+Let's understand each one.
+
+---
+
+# 8. `terraform state list`
+
+```bash
+terraform state list
+```
+
+Shows the resource addresses currently tracked in state.
+
+Example:
+
+```text
+aws_instance.web
+aws_instance.database
+aws_security_group.web
+aws_vpc.main
+```
+
+Think:
+
+> **"What resources does Terraform currently know about?"**
+
+---
+
+# 9. `terraform state show`
+
 ```bash
 terraform state show aws_instance.web
 ```
-```
+
+Shows the attributes Terraform currently has for that resource in state.
+
+Example:
+
+```text
 # aws_instance.web:
 resource "aws_instance" "web" {
     id            = "i-0abc123"
@@ -68,123 +348,1080 @@ resource "aws_instance" "web" {
     ...
 }
 ```
-Comparing this real, current-in-state output against your `.tf` config line by line is often the fastest way to spot exactly which attribute is causing an unexpected diff in `plan` — faster than guessing from the plan output's summary alone.
 
-### Example 2 — `state mv`, the CLI equivalent of a `moved` block
+
+
+This is extremely useful when debugging.
+
+Suppose:
+
 ```bash
-terraform state mv aws_instance.web aws_instance.app_server
+terraform plan
 ```
-Renaming a resource in your `.tf` code, without a corresponding state update, reads to Terraform as "the old one vanished, a new one appeared" — triggering a destroy-then-create. `state mv` (or the declarative `moved` block from Domain 4c) updates the state file's internal mapping instead, so the real infrastructure is never touched, just re-labeled.
 
-### Example 3 — `state rm`, precisely understood
+says:
+
+```text
+aws_instance.web must be replaced
+```
+
+You can inspect the current state:
+
 ```bash
-terraform state rm aws_instance.legacy
+terraform state show aws_instance.web
 ```
-**What if you assume this destroys the real resource?** It does not, and this misunderstanding is dangerous in the opposite direction from what people usually fear: `state rm` only edits Terraform's own bookkeeping. The real AWS resource keeps running, completely untouched — this is exactly how you "hand off" a resource from Terraform's management to a different tool or team without deleting it. (The declarative, version-controlled equivalent is a `removed` block, Domain 6.)
 
-### What if you skip using `state` commands and instead try to fix a state/config mismatch by editing the raw JSON state file directly?
-`terraform.tfstate` is technically just JSON, so it's *possible* to hand-edit it — but doing so bypasses Terraform's internal consistency checks entirely. A single malformed edit (a missing comma, a wrong resource address format) can corrupt the whole file, and there's no built-in recovery beyond restoring from a backup (which is exactly why S3 bucket versioning, Domain 6, matters). The `terraform state` subcommands exist specifically so you never have to hand-edit the file directly.
-
-### Real-World Scenario 1 — Refactoring a Module Without Destroying Production Resources
-A team moves an `aws_instance` resource from the root module into a newly-created child module, as part of a larger reorganization. Without state surgery, this move alone would make Terraform believe the original resource vanished (root module no longer has it) and a *new* one appeared (inside the child module) — destroy-then-create on a production instance, purely from a code reorganization. `terraform state mv aws_instance.web module.compute.aws_instance.web` (or the equivalent `moved` block) tells Terraform this is the same real object, just re-addressed.
-
-### Real-World Scenario 2 — Handing a Resource Off to a Different Team's Tooling
-A security team takes over management of a specific IAM role, planning to manage it going forward via a dedicated compliance tool instead of the application team's Terraform project. `terraform state rm aws_iam_role.app_role` removes it from the application team's state — the role itself is untouched in AWS, and the security team's tooling can now adopt it independently, without any overlap or conflict between the two teams' management.
+and compare it with your `.tf` configuration.
 
 ---
 
-## 3. Cross-Project Collaboration via Remote State Data Source
+# 10. `terraform state mv`
 
-### The mechanism
+Suppose your resource is currently:
+
+```hcl
+resource "aws_instance" "web" {
+  ...
+}
+```
+
+and you want to rename it to:
+
+```hcl
+resource "aws_instance" "app_server" {
+  ...
+}
+```
+
+Terraform normally sees:
+
+```text
+OLD:
+aws_instance.web
+
+NEW:
+aws_instance.app_server
+```
+
+It may interpret this as:
+
+```text
+Destroy aws_instance.web
+       +
+Create aws_instance.app_server
+```
+
+But you don't actually want to recreate the EC2 instance.
+
+You only changed its **Terraform address**.
+
+---
+
+## Use `state mv`
+
+```bash
+terraform state mv aws_instance.web aws_instance.app_server
+```
+
+This changes the address stored in state without changing the actual infrastructure.
+
+```text
+Before:
+
+State
+└── aws_instance.web
+          │
+          ▼
+       EC2 #123
+
+
+After state mv:
+
+State
+└── aws_instance.app_server
+          │
+          ▼
+       EC2 #123
+```
+
+Same real EC2 instance.
+
+Only Terraform's label/address changed.
+
+
+
+---
+
+# 11. `terraform state mv` vs `moved` Block
+
+You learned about `moved` blocks in Domain 4.
+
+These solve a similar problem.
+
+### CLI approach
+
+```bash
+terraform state mv aws_instance.web aws_instance.app_server
+```
+
+### Declarative approach
+
+```hcl
+moved {
+  from = aws_instance.web
+  to   = aws_instance.app_server
+}
+```
+
+### Mental model
+
+```text
+state mv
+= manually tell Terraform "this state address changed"
+
+moved block
+= declare the address change in Terraform code
+```
+
+The `moved` block is generally easier to review and share with teammates because the migration is represented in version-controlled code.
+
+---
+
+# 12. `terraform state rm`
+
+This command is very important because it is frequently misunderstood.
+
+```bash
+terraform state rm aws_instance.legacy
+```
+
+It means:
+
+> **Remove the resource from Terraform's state.**
+
+It does **NOT** mean:
+
+> Delete the actual AWS resource.
+
+---
+
+## Example
+
+Before:
+
+```text
+Terraform state
+└── aws_instance.legacy
+          │
+          ▼
+       AWS EC2
+```
+
+Run:
+
+```bash
+terraform state rm aws_instance.legacy
+```
+
+After:
+
+```text
+Terraform state
+└── Resource no longer tracked
+
+AWS
+└── EC2 still exists
+```
+
+
+
+---
+
+# 13. `state rm` vs `terraform destroy`
+
+This distinction is extremely important.
+
+### `terraform destroy`
+
+```text
+Terraform
+   │
+   ▼
+AWS
+   │
+   ▼
+Resource DELETED
+```
+
+### `terraform state rm`
+
+```text
+Terraform
+   │
+   ▼
+State
+   │
+   ▼
+Resource removed from tracking
+
+AWS resource
+   │
+   ▼
+STILL EXISTS
+```
+
+So:
+
+> **`state rm` modifies Terraform's bookkeeping, not the real infrastructure.**
+
+---
+
+# 14. `state rm` vs `removed` Block
+
+You also saw this in Domain 6.
+
+### Manual CLI approach
+
+```bash
+terraform state rm aws_instance.legacy
+```
+
+### Declarative approach
+
+```hcl
+removed {
+  from = aws_instance.legacy
+
+  lifecycle {
+    destroy = false
+  }
+}
+```
+
+Both can result in Terraform no longer managing the resource while leaving the real resource intact.
+
+The important difference is that a `removed` block documents the intent in Terraform code.
+
+---
+
+# 15. `terraform state pull`
+
+```bash
+terraform state pull > backup.tfstate
+```
+
+This retrieves the current state and writes it to a local file.
+
+Think:
+
+```text
+Remote backend
+      │
+      │ state pull
+      ▼
+backup.tfstate
+```
+
+This can be useful when you need a local copy for inspection or backup purposes.
+
+
+
+---
+
+# 16. Don't Manually Edit `terraform.tfstate`
+
+You may notice:
+
+```text
+terraform.tfstate
+```
+
+is basically JSON.
+
+Technically, you could open it and edit it.
+
+But **don't do this as your normal method**.
+
+Why?
+
+Terraform's state contains internal structure and relationships that Terraform expects to remain consistent.
+
+A bad manual edit can corrupt state.
+
+Instead, use:
+
+```bash
+terraform state list
+terraform state show
+terraform state mv
+terraform state rm
+terraform state pull
+```
+
+These commands are designed to work with state safely.
+
+
+
+---
+
+# 17. Refactoring Resources Without Destroying Them
+
+This is a very useful scenario.
+
+Suppose you have:
+
+```text
+Root module
+└── aws_instance.web
+```
+
+Then you decide to move it into:
+
+```text
+module.compute
+└── aws_instance.web
+```
+
+Terraform addresses have changed:
+
+```text
+Before:
+aws_instance.web
+
+After:
+module.compute.aws_instance.web
+```
+
+If Terraform doesn't know that this is the **same real instance**, it may propose:
+
+```text
+Destroy old
+     +
+Create new
+```
+
+That's obviously dangerous for production.
+
+You can instead move the state address:
+
+```bash
+terraform state mv \
+  aws_instance.web \
+  module.compute.aws_instance.web
+```
+
+Now Terraform understands:
+
+```text
+Same infrastructure
+      │
+      ▼
+New Terraform address
+```
+
+
+
+---
+
+# 18. `terraform_remote_state`
+
+Now let's look at collaboration between **separate Terraform projects**.
+
+Imagine:
+
+```text
+Network Team
+    │
+    ▼
+Network Terraform Project
+    │
+    └── Creates VPC/subnets
+```
+
+And:
+
+```text
+Application Team
+    │
+    ▼
+Application Terraform Project
+    │
+    └── Creates EC2
+```
+
+The application project needs to know:
+
+```text
+private_subnet_id
+```
+
+But you don't necessarily want to merge both projects into one giant Terraform configuration.
+
+---
+
+# 19. Remote State Data Source
+
+Terraform provides:
+
 ```hcl
 data "terraform_remote_state" "network" {
   backend = "s3"
+
   config = {
     bucket = "my-org-tfstate"
     key    = "prod/network/terraform.tfstate"
     region = "ap-south-1"
   }
 }
+```
 
+Then another resource can use an output from that remote state:
+
+```hcl
 resource "aws_instance" "app" {
   subnet_id = data.terraform_remote_state.network.outputs.private_subnet_id
 }
 ```
-This lets separate Terraform projects — owned by separate teams, applied on entirely separate schedules — share information without merging their code or state into one unwieldy monolith.
 
-```mermaid
+
+
+---
+
+# 20. How `terraform_remote_state` Works
+
+The architecture is:
+
+```mermaid id="j4f3az"
 flowchart LR
     NetProj["Network Project\n(own state, own team)"] -->|"outputs: vpc_id, subnet_ids"| S3["S3 State Bucket"]
     S3 -->|"terraform_remote_state data source"| AppProj["App Project\n(own state, own team)"]
 ```
 
-### What if a team instead tries to share infrastructure by merging everything into one giant root module?
-This is a very real, very common anti-pattern at scale: one enormous config, owned by no single team, that every team is afraid to touch because a mistake anywhere can affect everyone. `terraform_remote_state` is the deliberate alternative — keep ownership separate and explicit, sharing only the specific, deliberately-published outputs each side actually needs.
+So:
 
-### Real-World Scenario 1 — Read-Only Cross-Team Dependency Without Shared Access
-An application team needs their EC2 instances placed in the correct subnets, but should never have write access to the networking team's Terraform state (a real security/compliance boundary in many organizations — least privilege applies to infrastructure-as-code just as much as to application permissions). `terraform_remote_state` gives the app team **read-only** access to specific published outputs (`vpc_id`, `private_subnet_ids`) without ever needing IAM permissions to modify the networking team's actual state file.
+```text
+Network Project
+      │
+      │ publishes outputs
+      ▼
+Remote State
+      │
+      │ read
+      ▼
+Application Project
+```
 
-### Real-World Scenario 2 — A Breaking Change on the Other Side of the Boundary
-The networking team renames an output from `subnet_id` to `private_subnet_id` as part of an internal cleanup. Every downstream team's `terraform_remote_state` reference to the old name (`data.terraform_remote_state.network.outputs.subnet_id`) now returns `null` instead of a helpful error — a subtle, delayed failure mode that's a well-known real risk of this pattern. The practical mitigation: treat published outputs as a stable **public API** with the same rename-carefully discipline you'd apply to a REST API's response fields, and communicate output renames to consuming teams in advance.
+The two projects can therefore remain separate.
+
+
 
 ---
 
-## 4. Verbose Logging — When and How to Use It (Objective 7c)
+# 21. Why Not Put Everything Into One Huge Terraform Project?
 
-### The mechanism
-```bash
-export TF_LOG=DEBUG          # TRACE > DEBUG > INFO > WARN > ERROR (TRACE = most verbose)
-export TF_LOG_PATH=./tf.log  # write logs to a file instead of flooding your terminal
-terraform apply
-# ...investigate tf.log...
-unset TF_LOG                 # turn it back off - very noisy for normal use
+Imagine:
+
+```text
+One giant root module
+│
+├── Networking
+├── Security
+├── Databases
+├── Applications
+├── Monitoring
+├── IAM
+└── Everything else
 ```
 
-### When to actually reach for it (not just "when something's wrong")
-`TF_LOG` is specifically useful when the normal `plan`/`apply` error message is **too vague to act on** — a generic API error, an intermittent failure, or Terraform appearing to "hang." It's the wrong first step for anything `terraform validate` (Domain 3) would already catch — reserve it for problems that survive past syntax/type validation.
+As the organization grows, this can become difficult to manage.
 
-### Example — using `TRACE` to catch exactly which API call AWS is rejecting
+Different teams may need different ownership and deployment schedules.
+
+Instead:
+
+```text
+Network Project
+      │
+      └── Remote state outputs
+                 │
+                 ▼
+          Application Project
+```
+
+Each project can maintain its own:
+
+* configuration
+* state
+* deployment lifecycle
+* ownership
+
+while sharing only the required outputs.
+
+---
+
+# 22. Remote State Uses Outputs
+
+This is important.
+
+Suppose Network Terraform has:
+
+```hcl
+output "private_subnet_id" {
+  value = aws_subnet.private.id
+}
+```
+
+The application project can access:
+
+```hcl
+data.terraform_remote_state.network.outputs.private_subnet_id
+```
+
+So the pattern is:
+
+```text
+Network resource
+      ↓
+Network output
+      ↓
+Remote state
+      ↓
+terraform_remote_state
+      ↓
+Application project
+```
+
+The remote-state consumer should depend on **published outputs**, rather than reaching directly into another project's internal resources.
+
+---
+
+# 23. Important Remote State Design Consideration
+
+Treat outputs consumed by other projects like an API.
+
+For example, suppose Network publishes:
+
+```text
+subnet_id
+```
+
+Application consumes:
+
+```hcl
+data.terraform_remote_state.network.outputs.subnet_id
+```
+
+Later Network renames it to:
+
+```text
+private_subnet_id
+```
+
+Now the consumer still expects:
+
+```text
+outputs.subnet_id
+```
+
+and the downstream configuration can break.
+
+The source highlights this as an important operational risk: published outputs form a dependency boundary, so output names should be treated as stable interfaces. 
+
+### Mental model
+
+```text
+Terraform output
+       =
+Published API field
+```
+
+Don't casually rename it without considering consumers.
+
+---
+
+# 24. Verbose Logging
+
+Sometimes Terraform's normal error message isn't enough.
+
+For example:
+
+```bash
+terraform apply
+```
+
+might simply return:
+
+```text
+Error creating EC2 instance
+```
+
+That's not very helpful.
+
+Terraform provides the:
+
+```text
+TF_LOG
+```
+
+environment variable for verbose logging.
+
+---
+
+# 25. `TF_LOG`
+
+Example:
+
+```bash
+export TF_LOG=DEBUG
+terraform apply
+```
+
+Terraform then produces detailed internal logs.
+
+The levels are:
+
+```text
+TRACE
+DEBUG
+INFO
+WARN
+ERROR
+```
+
+The source's important point:
+
+> **TRACE is the most verbose level.**
+
+
+
+---
+
+# 26. Log Levels
+
+Think of them approximately like this:
+
+```text
+ERROR
+  ↑
+WARN
+  ↑
+INFO
+  ↑
+DEBUG
+  ↑
+TRACE
+```
+
+As you move toward `TRACE`, you get increasingly detailed information.
+
+### Most important exam fact:
+
+```text
+TF_LOG=TRACE
+```
+
+➡️ **Most detailed/verbose logging.**
+
+---
+
+# 27. `TF_LOG_PATH`
+
+Instead of dumping thousands of lines into your terminal, you can send the logs to a file.
+
+```bash
+export TF_LOG=DEBUG
+export TF_LOG_PATH=./tf.log
+
+terraform apply
+```
+
+Now Terraform writes the logs into:
+
+```text
+tf.log
+```
+
+
+
+After you're finished:
+
+```bash
+unset TF_LOG
+```
+
+This is important because verbose logging can become extremely noisy.
+
+---
+
+# 28. When Should You Use `TF_LOG`?
+
+Don't immediately use:
+
+```bash
+TF_LOG=TRACE
+```
+
+for every Terraform problem.
+
+First use normal troubleshooting:
+
+```text
+Read the error
+     ↓
+terraform validate
+     ↓
+Check configuration
+     ↓
+Check provider/version
+     ↓
+Use verbose logging if needed
+```
+
+Verbose logging is particularly useful when:
+
+* Terraform appears to hang
+* An API error is too vague
+* The failure is intermittent
+* You suspect a provider problem
+* You need to see the underlying API interaction
+
+
+
+---
+
+# 29. Example of `TRACE` Logging
+
+Suppose:
+
 ```bash
 export TF_LOG=TRACE
 export TF_LOG_PATH=./trace.log
+
 terraform apply
 ```
+
+The trace might reveal an underlying AWS API error such as:
+
+```text
+InvalidParameterValue:
+Invalid availability zone:
+[ap-south-1z]
 ```
-# inside trace.log, buried among thousands of lines:
-[DEBUG] provider.terraform-provider-aws: 2024/01/15 10:23:44 [DEBUG] [aws-sdk-go] DEBUG: Request ec2/RunInstances Details:
----[ REQUEST POST-SIGN ]-----------------------------
-POST / HTTP/1.1
-...
-2024/01/15 10:23:45 [ERROR] AWS Error: InvalidParameterValue: Invalid availability zone: [ap-south-1z]
+
+Your normal Terraform error may have hidden the useful detail.
+
+TRACE can expose the underlying request and provider/API response.
+
+So:
+
+```text
+Terraform error
+      ↓
+Not enough information
+      ↓
+TF_LOG=TRACE
+      ↓
+Provider/API details
+      ↓
+Actual root cause
 ```
-`TRACE` shows the *exact* outbound API request and AWS's exact rejection reason — often the fastest way to find a genuinely obscure bug, at the cost of enormous log volume.
 
-### What if you leave `TF_LOG` set permanently in your shell profile?
-Every future Terraform command — even ones that work fine — now produces enormous, slow-to-scroll log output, burying the actually-useful plan/apply summary you normally rely on. Treat `TF_LOG` as a scalpel you pick up for one specific debugging session and immediately `unset` afterward, never a permanent setting.
 
-### Real-World Scenario 1 — Diagnosing an Intermittent Provisioning Failure
-A team's `terraform apply` fails roughly one time in ten with a generic "Error creating EC2 Instance" message, with no further detail — a classic case for reaching for verbose logging. Turning on `TF_LOG=DEBUG` for a few reproduction attempts eventually surfaces `RequestLimitExceeded` in the underlying AWS API response — the real cause was API throttling, not a code bug — leading directly to the fix (Terraform's built-in retry behavior, or in Terragrunt's case, `retryable_errors`) rather than hours spent scrutinizing `.tf` code that was never actually wrong.
-
-### Real-World Scenario 2 — Confirming a Suspected Provider Bug Before Filing a Report
-An engineer suspects a specific provider version is silently sending a malformed API request for a particular resource type. Reproducing the issue with `TF_LOG=TRACE` captures the *exact* request payload sent to AWS, which becomes the concrete evidence attached to a GitHub issue filed against the provider's repository (Domain 3's "Reporting Terraform Bugs") — turning a vague "it doesn't work" report into a reproducible, actionable bug report maintainers can act on quickly.
 
 ---
 
-## 5. Practice Questions
+# 30. Don't Leave `TF_LOG` Enabled Permanently
 
-### Easy
-1. Does `terraform import` generate the matching `.tf` configuration for you automatically in every Terraform version?
-2. Does `terraform state rm` delete the real cloud resource?
-3. Which environment variable enables Terraform's most verbose internal logging, and what's its most detailed level called?
+Suppose you put this permanently in your shell:
 
-### Medium
-4. You need to import an existing (manually-created) AWS security group `sg-0123456789abcdef0` as `aws_security_group.legacy`. Write the import command, and describe the essential next step before trusting this resource is safely under Terraform's management.
-5. A team reorganizes their code, moving `aws_instance.web` from the root module into a new `module.compute`. Without any state operation, what would `terraform plan` propose, and which command (or block) prevents it?
-6. Write a `terraform_remote_state` data source reading a `private_subnet_id` output from `s3://acme-tfstate/network/prod/terraform.tfstate` in `us-east-1`, and show how you'd reference the value.
+```bash
+export TF_LOG=TRACE
+```
 
-### Hard
-7. A team imports an S3 bucket but writes a config that omits an actually-enabled `versioning` block, assuming it wasn't configured. Explain, step by step, how this mistake surfaces later as an unrelated-looking side effect of a completely different change.
-8. The networking team renames a published output from `subnet_id` to `private_subnet_id`. Explain exactly what happens to a downstream team's `terraform_remote_state` reference to the old name, why the failure mode is more dangerous than a hard error would be, and what process would have prevented the surprise.
+Now every Terraform command produces huge amounts of output.
+
+Even:
+
+```bash
+terraform plan
+```
+
+could generate enormous logs.
+
+So use verbose logging as a **debugging tool for a specific investigation**, then disable it:
+
+```bash
+unset TF_LOG
+```
+
+
 
 ---
-**Next:** [10-domain8-hcp-terraform.md](10-domain8-hcp-terraform.md)
+
+# 31. `TF_LOG` + Provider Debugging
+
+This can also help when you suspect a provider bug.
+
+For example:
+
+```text
+Terraform configuration
+        ↓
+Terraform Core
+        ↓
+AWS Provider
+        ↓
+AWS API
+```
+
+If something goes wrong, TRACE logging can help reveal:
+
+```text
+What Terraform requested
+        ↓
+What provider sent
+        ↓
+What AWS returned
+```
+
+This can provide evidence when reporting a provider bug.
+
+
+
+---
+
+# 32. Complete Domain 7 Mental Model
+
+```mermaid id="m8e5aq"
+flowchart TD
+    A["Existing Infrastructure"] -->|"terraform import"| B["Terraform State"]
+    B --> C["Write / Generate .tf Configuration"]
+    C --> D["terraform plan"]
+    D -->|"No unexpected diff"| E["Safely Managed"]
+
+    F["Terraform State"] --> G["terraform state list/show"]
+    G --> H["Inspect / Troubleshoot"]
+
+    I["Project A State"] -->|"terraform_remote_state"| J["Project B"]
+    J --> K["Use published outputs"]
+
+    L["Terraform Problem"] --> M["Normal error insufficient?"]
+    M -->|"Yes"| N["TF_LOG=DEBUG / TRACE"]
+    N --> O["Inspect provider/API details"]
+```
+
+---
+
+# Domain 7 — Command Cheat Sheet
+
+| Command                  | Purpose                                                             |
+| ------------------------ | ------------------------------------------------------------------- |
+| `terraform import`       | Bring an existing resource into Terraform state                     |
+| `terraform plan`         | Verify configuration matches reality after import                   |
+| `terraform state list`   | List resources tracked in state                                     |
+| `terraform state show`   | Show one resource's state attributes                                |
+| `terraform state mv`     | Change a resource's state address without destroying infrastructure |
+| `terraform state rm`     | Remove resource from state without destroying the real resource     |
+| `terraform state pull`   | Retrieve current state                                              |
+| `terraform_remote_state` | Read outputs from another Terraform project's state                 |
+| `TF_LOG=DEBUG`           | Enable detailed logging                                             |
+| `TF_LOG=TRACE`           | Enable **most verbose** logging                                     |
+| `TF_LOG_PATH`            | Write logs to a file                                                |
+
+---
+
+# ⭐ Most Important Exam Traps
+
+### Trap 1 — Import
+
+**Q:** Does `terraform import` create the `.tf` configuration?
+
+**A:** Import primarily adds the existing resource to **state**. You still need appropriate configuration; configuration generation can be used as a starting point in newer Terraform versions.
+
+---
+
+### Trap 2 — After import
+
+**Q:** What should you do after importing?
+
+```bash
+terraform import ...
+```
+
+**A:**
+
+```bash
+terraform plan
+```
+
+Verify that your configuration correctly represents the imported infrastructure.
+
+---
+
+### Trap 3 — `state rm`
+
+**Q:** Does this destroy AWS?
+
+```bash
+terraform state rm aws_instance.web
+```
+
+**A:** ❌ No.
+
+It only removes the resource from Terraform's state.
+
+---
+
+### Trap 4 — `state mv`
+
+**Q:** Does this recreate the resource?
+
+```bash
+terraform state mv aws_instance.web aws_instance.app
+```
+
+**A:** ❌ No.
+
+It changes the resource's Terraform state address.
+
+---
+
+### Trap 5 — `state show`
+
+**Q:** You want to see the attributes Terraform currently has for one resource.
+
+**A:**
+
+```bash
+terraform state show aws_instance.web
+```
+
+---
+
+### Trap 6 — `state list`
+
+**Q:** You want to see every resource currently tracked by Terraform.
+
+**A:**
+
+```bash
+terraform state list
+```
+
+---
+
+### Trap 7 — Remote state
+
+**Q:** Two separate Terraform projects need to share information.
+
+**A:** Use `terraform_remote_state` to consume published outputs.
+
+---
+
+### Trap 8 — Remote state output
+
+If Network publishes:
+
+```hcl
+output "private_subnet_id" {
+  value = ...
+}
+```
+
+the consumer uses:
+
+```hcl
+data.terraform_remote_state.network.outputs.private_subnet_id
+```
+
+---
+
+### Trap 9 — Logging
+
+**Q:** Most verbose Terraform logging?
+
+**A:**
+
+```bash
+export TF_LOG=TRACE
+```
+
+---
+
+### Trap 10 — Log file
+
+**Q:** Write Terraform logs to a file?
+
+**A:**
+
+```bash
+export TF_LOG_PATH=./tf.log
+```
+
+---
+
+# 🧠 Final Mental Model
+
+Remember these **10 lines**:
+
+```text
+1. terraform import = existing infrastructure → Terraform state.
+
+2. Import does NOT mean your .tf configuration is automatically correct.
+
+3. After import → terraform plan.
+
+4. state list = "What resources are tracked?"
+
+5. state show = "What does Terraform know about this resource?"
+
+6. state mv = "Change the Terraform address, keep the real resource."
+
+7. state rm = "Stop tracking it, DON'T delete it."
+
+8. terraform_remote_state = "Read outputs from another Terraform project's state."
+
+9. TF_LOG=DEBUG = detailed troubleshooting logs.
+
+10. TF_LOG=TRACE = MOST verbose Terraform logging.
+```
+
+### The three biggest distinctions to memorize
+
+```text
+IMPORT
+Existing resource
+      ↓
+Terraform STATE
+
+
+STATE RM
+Terraform STATE
+      ↓
+Remove tracking
+      ↓
+Real resource stays
+
+
+STATE MV
+Old Terraform address
+      ↓
+New Terraform address
+      ↓
+Same real resource
+```
+
+And for debugging:
+
+```text
+Normal error
+     ↓
+Not enough information?
+     ↓
+TF_LOG=DEBUG
+     ↓
+Still need deeper details?
+     ↓
+TF_LOG=TRACE
+```
+
