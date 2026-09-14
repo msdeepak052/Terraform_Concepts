@@ -1,41 +1,262 @@
 # Domain 6 — Terraform State Management
 
-*Official exam objectives covered: 6a (Local backend), 6b (State locking), 6c (Remote state via the backend block), 6d (Manage resource drift and state)*
-*Course lectures folded in: Terraform Workspaces (overview + practical), Git for Team Collaboration, Security Risks of Storing State in Git, .gitignore, Terraform Backend, State Locking, S3 Backend, Desired State vs Current State (drift management, deep dive), Removed Blocks*
+## What this domain covers
+
+Terraform State Management is about **where Terraform stores state, how teams safely share it, and how Terraform detects and handles differences between your configuration and real infrastructure**.
+
+The official exam objectives are:
+
+* **6a — Local backend**
+* **6b — State locking**
+* **6c — Remote state via the backend block**
+* **6d — Manage resource drift and state**
+
+
 
 ---
 
-## 1. The Local Backend (Objective 6a)
+# 1. The Local Backend
 
-### What it is
-When no `backend` block is configured, Terraform defaults to the **local backend** — `terraform.tfstate` sitting as a plain file in your working directory, read and written directly by the Terraform CLI on your own machine.
+## What is a backend?
+
+A **backend** determines where Terraform stores its state.
+
+If you don't configure any backend, Terraform automatically uses the **local backend**.
+
+The state is stored as:
+
+```text
+terraform.tfstate
+```
+
+in your working directory.
+
+### Example
 
 ```hcl
-# No backend block at all = local backend, implicitly
+# No backend block
+# Therefore Terraform uses the local backend
+
 resource "aws_instance" "web" {
   ami = var.ami_id
 }
 ```
 
-### What role it plays, and its real limits
-The local backend is genuinely fine for solo learning, a personal project, or a quick proof-of-concept — zero setup, works immediately. Its limits appear the instant more than one person touches the same infrastructure:
-- **No shared source of truth.** If two people each have their own local `terraform.tfstate`, neither knows what the other created — leading directly to the "duplicate resource" problem from Domain 2.
-- **No locking.** Nothing stops two people running `apply` at the exact same moment, corrupting the file.
-- **Easy to lose.** A laptop dies, a disk fills up, someone `rm -rf`'s the wrong folder — and with it, the only record of what real infrastructure exists.
-- **Easy to accidentally commit.** Section 4 covers exactly why this is dangerous.
 
-### What if a team keeps using the local backend anyway, as they grow?
-This is a very common real progression: a solo project works fine locally, a second engineer joins, and suddenly nobody's `terraform plan` reflects what the other person's `apply` actually created — because each has a *different*, un-synced local state file. The team either starts manually emailing/Slacking `terraform.tfstate` back and forth (genuinely happens, and is exactly as fragile as it sounds) or migrates to a remote backend (Section 3) — there's no good way to make the local backend work safely for more than one person.
 
-### Real-World Scenario — A Solo Developer's Project Grows a Second Contributor
-An indie developer manages their side project's AWS infrastructure with the local backend for a year, no issues. They bring on a co-founder who needs to make infrastructure changes too. Within the first week, the co-founder's `terraform apply` (using their own, never-before-run local state) tries to create a VPC that already exists — because their local state file has never seen any of the original developer's applies. The fix is migrating to a remote backend (Section 3) *before* a second person ever touches the project, not after the first collision.
+### Simple mental model
+
+```text
+              Your Laptop
+                  │
+                  ▼
+             Terraform CLI
+                  │
+                  ▼
+          terraform.tfstate
+```
+
+The state file is therefore **local to that machine**.
 
 ---
 
-## 2. State Locking (Objective 6b)
+## Is the local backend bad?
 
-### What it is and why it exists
-When someone runs `apply`, Terraform acquires a **lock** on the state so that a second, simultaneous `apply` can't write to the same file at the same time and corrupt it.
+**No.**
+
+It is perfectly fine when:
+
+* You're learning Terraform
+* You're working on a personal project
+* You're experimenting
+* You're creating a proof-of-concept
+* You're the only person managing the infrastructure
+
+The problem starts when **multiple people need to manage the same infrastructure**.
+
+---
+
+## Problems with the local backend
+
+### 1. No shared source of truth
+
+Imagine:
+
+```text
+Alice's laptop
+└── terraform.tfstate
+
+Bob's laptop
+└── terraform.tfstate
+```
+
+These are two separate state files.
+
+Alice may have created:
+
+```text
+VPC
+EC2
+RDS
+```
+
+but Bob's state may know nothing about them.
+
+Bob could therefore run:
+
+```bash
+terraform apply
+```
+
+and Terraform may think those resources need to be created.
+
+This can lead to duplicate resources or conflicts.
+
+---
+
+### 2. No shared locking
+
+Two engineers could potentially run:
+
+```text
+Alice → terraform apply
+Bob   → terraform apply
+```
+
+at the same time.
+
+There is no central mechanism in the local backend coordinating their state operations.
+
+---
+
+### 3. Easy to lose
+
+The state exists on your machine.
+
+If:
+
+* your laptop dies
+* the disk is lost
+* the Terraform directory is deleted
+* the file becomes corrupted
+
+you may lose the state that Terraform relies on to track your infrastructure.
+
+---
+
+### 4. Easy to accidentally commit to Git
+
+This is particularly dangerous because state can contain sensitive information.
+
+We'll cover this in detail later.
+
+
+
+---
+
+# 2. State Locking
+
+## What is state locking?
+
+**State locking prevents multiple Terraform operations from modifying the same state simultaneously.**
+
+Think about two engineers:
+
+```text
+Alice                         Bob
+  │                            │
+  │ terraform apply            │
+  ▼                            │
+[STATE LOCKED]                 │
+                               │
+                               │ terraform apply
+                               ▼
+                         ❌ Cannot acquire lock
+```
+
+Bob must wait until Alice's operation completes and the lock is released.
+
+---
+
+## Why do we need locking?
+
+Without locking:
+
+```text
+Alice ────────────────┐
+                      ├──> Same state
+Bob   ────────────────┘
+```
+
+Both Terraform processes could try to modify the same state simultaneously.
+
+This can result in:
+
+* conflicting changes
+* overwritten state
+* corrupted state
+* Terraform losing track of resources
+
+The important point for the exam:
+
+> **State locking protects the state from concurrent Terraform operations.**
+
+---
+
+## Classic S3 + DynamoDB locking model
+
+The traditional AWS setup is:
+
+```text
+                 Terraform
+                    │
+                    ▼
+              ┌───────────┐
+              │    S3     │
+              │   State   │
+              └─────┬─────┘
+                    │
+                    │ locking
+                    ▼
+              ┌───────────┐
+              │ DynamoDB  │
+              │   Lock    │
+              └───────────┘
+```
+
+The S3 bucket stores the state.
+
+The DynamoDB table provides the locking mechanism in the classic configuration.
+
+
+
+### Example
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket         = "my-org-tfstate"
+    key            = "prod/terraform.tfstate"
+    region         = "ap-south-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
+}
+```
+
+Here:
+
+| Setting          | Meaning                                      |
+| ---------------- | -------------------------------------------- |
+| `bucket`         | S3 bucket storing state                      |
+| `key`            | Location/path of the state inside the bucket |
+| `region`         | AWS region                                   |
+| `dynamodb_table` | Locking table in the classic setup           |
+| `encrypt`        | Encrypt state at rest                        |
+
+---
+
+## Locking sequence
 
 ```mermaid
 sequenceDiagram
@@ -50,8 +271,48 @@ sequenceDiagram
     Bob->>Backend: retries, acquires lock, proceeds
 ```
 
-### How it's implemented with the S3 backend
-S3 itself has no native locking mechanism — the classic pattern pairs it with a **DynamoDB table**, which holds a lock record (a row) for the duration of each operation.
+### Exam mental model
+
+> **S3 = stores state**
+> **DynamoDB = classic locking mechanism**
+
+The source also notes that newer Terraform/AWS setups support S3-native locking, so don't treat DynamoDB as an absolute requirement for every current S3 configuration. But for the **Terraform Associate exam mental model**, understand the classic **S3 + DynamoDB** pattern. 
+
+---
+
+# 3. Remote State with the Backend Block
+
+## Why use remote state?
+
+Instead of:
+
+```text
+Developer laptop
+└── terraform.tfstate
+```
+
+a team can have:
+
+```text
+                 Terraform
+                     │
+                     ▼
+                Remote Backend
+                     │
+                     ▼
+                S3 State File
+```
+
+Now all engineers access the **same state**.
+
+This provides a shared source of truth.
+
+---
+
+# S3 Backend
+
+A typical configuration:
+
 ```hcl
 terraform {
   backend "s3" {
@@ -63,107 +324,496 @@ terraform {
   }
 }
 ```
-> Newer Terraform/AWS-provider versions have introduced S3-native locking via conditional writes, reducing the strict DynamoDB requirement — but "S3 + DynamoDB" is still the classic, most commonly tested pattern; know it as the default mental model even as the tooling evolves.
 
-### What if you run a team's S3 backend *without* the DynamoDB locking table?
-Nothing stops two people from running `apply` at literally the same second. The most likely outcome is a corrupted or overwritten state file — one person's changes silently vanish from state (even though the real AWS resources they created still exist), leading to Terraform believing resources need to be recreated that are actually already running, or vice versa. This is one of the most avoidable, and most damaging, real-world Terraform incidents — entirely prevented by a locking table that costs a few cents a month.
 
-### Real-World Scenario — Two Engineers Racing an Apply During an Incident
-During a production incident, two on-call engineers, unaware of each other, both start `terraform apply` within seconds of each other to fix the same issue. With DynamoDB locking configured, the second engineer's `apply` fails immediately with a clear "state locked by [Alice], created at [timestamp]" error — annoying, but safe; they coordinate over Slack and retry once the first apply finishes. Without locking, both applies proceed simultaneously, and the state file that results depends on whichever process happened to write last — a real risk of losing track of infrastructure changes during the exact moment safety matters most.
 
 ---
 
-## 3. Configuring Remote State via the Backend Block (Objective 6c)
+## Understanding `bucket`
 
-### The S3 backend, in full
+```hcl
+bucket = "my-org-tfstate"
+```
+
+This is the S3 bucket where Terraform stores the state.
+
+Example:
+
+```text
+S3 bucket:
+my-org-tfstate
+```
+
+---
+
+## Understanding `key`
+
+```hcl
+key = "prod/terraform.tfstate"
+```
+
+The `key` is essentially the **path/name of the state object inside the bucket**.
+
+For example:
+
+```text
+my-org-tfstate/
+│
+├── prod/terraform.tfstate
+├── staging/terraform.tfstate
+├── network/prod/terraform.tfstate
+└── app/prod/terraform.tfstate
+```
+
+This allows multiple projects/environments to use the same bucket without sharing the same state object.
+
+
+
+### Important distinction
+
+```text
+bucket = WHERE
+key    = WHICH STATE FILE / PATH
+```
+
+---
+
+## Why enable S3 versioning?
+
+State is extremely important.
+
+If the state becomes corrupted or is accidentally changed, S3 versioning gives you historical versions of the object.
+
+So:
+
+```text
+S3
+│
+├── state version 1
+├── state version 2
+├── state version 3
+└── state version 4  ← current
+```
+
+This provides a recovery path.
+
+---
+
+## What does `encrypt = true` do?
+
+```hcl
+encrypt = true
+```
+
+enables encryption of the state object at rest.
+
+This is important because Terraform state can contain sensitive information.
+
+**But remember:**
+
+> Encryption at rest does not mean state is harmless to expose.
+
+You still need to protect access to the bucket and avoid putting state in Git.
+
+---
+
+# 4. VERY IMPORTANT: Backend Blocks Cannot Use Variables
+
+This is one of the biggest exam traps in this domain.
+
+You **cannot** do this:
+
 ```hcl
 terraform {
   backend "s3" {
-    bucket         = "my-org-tfstate"
-    key            = "prod/terraform.tfstate"    # path within the bucket
-    region         = "ap-south-1"
-    dynamodb_table = "terraform-locks"
-    encrypt        = true
+    bucket = var.state_bucket_name
   }
 }
 ```
-- **Bucket versioning** should be enabled on the S3 bucket — gives you a rollback path if state ever gets corrupted or a bad apply needs its prior state restored.
-- **`key`** is how multiple projects/environments share one bucket without colliding — each gets its own object path (`prod/terraform.tfstate`, `staging/terraform.tfstate`, `network/prod/terraform.tfstate`, etc.).
-- **`encrypt = true`** enables server-side encryption at rest for the state object — important given the plaintext-secrets caveat covered in Domain 4c.
 
-### The single most exam-tested gotcha about backend blocks
-**Backend blocks cannot use variables.** This is different from every other block in Terraform:
+❌ Invalid.
+
+
+
+---
+
+## Why can't backend blocks use variables?
+
+Terraform needs to know:
+
+> **Where is my state?**
+
+before it can fully initialize and work with that state.
+
+So the backend configuration is processed very early.
+
+It cannot first load a variable such as:
+
 ```hcl
-# THIS DOES NOT WORK
-terraform {
-  backend "s3" {
-    bucket = var.state_bucket_name   # ERROR - variables are not allowed here
-  }
-}
+variable "state_bucket_name" {}
 ```
-**Why:** backend configuration is resolved *before* Terraform has even parsed your variable definitions — it needs to know where to fetch/write state before it can do anything else, including reading `.tfvars`. The workaround is `-backend-config`:
+
+and then use it to discover the backend.
+
+### Think of it like this
+
+```text
+Terraform starts
+      │
+      ▼
+"Where is my state?"
+      │
+      ▼
+Backend configuration
+      │
+      ▼
+Load/access state
+      │
+      ▼
+Continue Terraform processing
+```
+
+Therefore:
+
+```hcl
+bucket = var.bucket
+```
+
+doesn't work.
+
+---
+
+# How do we customize backend configuration?
+
+Use `-backend-config`.
+
+### CLI example
+
 ```bash
-terraform init -backend-config="bucket=my-org-tfstate" -backend-config="key=prod/terraform.tfstate"
-# or, more commonly, a separate backend config file:
+terraform init \
+  -backend-config="bucket=my-org-tfstate" \
+  -backend-config="key=prod/terraform.tfstate"
+```
+
+Or use a separate configuration file:
+
+```bash
 terraform init -backend-config="backend-prod.hcl"
 ```
 
-### What if you don't realize this rule and try to parameterize the backend anyway?
-You get a confusing error the first time you try it, at exactly the point where you're trying to make your config more flexible across environments — a well-known first real "gotcha" moment for people moving from single-environment to multi-environment Terraform. The correct pattern (partial backend config + `-backend-config` files, one per environment) is the standard fix.
 
-### Real-World Scenario 1 — Migrating from Local to Remote State
-A team starts with the local backend, then adds an S3 `backend` block to their config and runs `terraform init` again. Terraform detects the backend configuration changed and **interactively prompts**: "Do you want to copy existing state to the new backend?" — confirming "yes" copies the entire state history into S3 in one step, with the local `terraform.tfstate` now safely superseded (and which should then be deleted/ignored, never left lying around as a stale duplicate).
 
-### Real-World Scenario 2 — One Bucket, Many Projects, Zero Collisions
-A platform team uses one S3 bucket (`my-org-tfstate`) for every project company-wide, distinguishing them purely by `key`: `network/prod/terraform.tfstate`, `app-frontend/prod/terraform.tfstate`, `app-backend/staging/terraform.tfstate`, and so on. One bucket, one DynamoDB locking table, dozens of independently-applied projects, no state file ever collides with another because the `key` path is always unique per project+environment.
+### Exam question
+
+**Can a backend block reference a Terraform variable?**
+
+Answer:
+
+> ❌ No.
+
+**How can backend configuration be supplied dynamically?**
+
+Answer:
+
+> Use `terraform init -backend-config=...`.
 
 ---
 
-## 4. Git Collaboration & State File Security
+# 5. Migrating Local State to Remote State
 
-### Why the state file must never touch Git
-The state file contains **every attribute of every resource**, often including secrets, **in plaintext** — regardless of whether a corresponding output was marked `sensitive` (Domain 4c).
+Suppose you started with:
+
+```text
+Local backend
+    ↓
+terraform.tfstate
+```
+
+Later you decide to move to S3.
+
+You add:
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket = "my-org-tfstate"
+    key    = "prod/terraform.tfstate"
+  }
+}
+```
+
+Then run:
+
+```bash
+terraform init
+```
+
+Terraform detects that the backend configuration has changed.
+
+It can ask whether you want to migrate/copy the existing state to the new backend.
+
+The important concept:
+
+```text
+OLD
+Local terraform.tfstate
+        │
+        │ migration
+        ▼
+NEW
+S3 remote state
+```
+
+
+
+### Exam trap
+
+`terraform init` is not only for downloading providers.
+
+It is also responsible for **initializing/configuring the backend**, including handling backend changes.
+
+---
+
+# 6. One S3 Bucket Can Store Many State Files
+
+Suppose a company has:
+
+```text
+my-org-tfstate
+```
+
+They can use different keys:
+
+```text
+network/prod/terraform.tfstate
+app-frontend/prod/terraform.tfstate
+app-backend/prod/terraform.tfstate
+app-backend/staging/terraform.tfstate
+```
+
+So:
+
+```text
+ONE S3 BUCKET
+      │
+      ├── network/prod/terraform.tfstate
+      ├── app-frontend/prod/terraform.tfstate
+      ├── app-backend/prod/terraform.tfstate
+      └── app-backend/staging/terraform.tfstate
+```
+
+The `key` keeps them separate.
+
+
+
+---
+
+# 7. Never Store Terraform State in Git
+
+This is extremely important.
+
+You should generally **never commit**:
+
+```text
+terraform.tfstate
+```
+
+to Git.
+
+Why?
+
+Because Terraform state can contain resource attributes and potentially sensitive values in plaintext.
+
+For example, state might contain information such as:
+
+```text
+database username
+database password
+API credentials
+resource IDs
+connection information
+other sensitive attributes
+```
+
+Marking an output as:
+
+```hcl
+sensitive = true
+```
+
+does **not** mean the underlying state becomes magically encrypted.
+
+---
+
+## What happens if state gets committed?
+
+Imagine:
+
 ```mermaid
 flowchart LR
     A["terraform.tfstate\n(contains plaintext secrets)"] -->|"git add . / git commit"| B["Git history"]
     B -->|"even if later deleted"| C["Still recoverable from git log/history"]
 ```
-**What if it's committed anyway, even to a "private" repo?** Treat every secret inside it as immediately compromised — rotate all of them — because Git history retains old commits indefinitely by default; deleting the file in a later commit does *not* remove it from history, and anyone with repo access (including former employees whose access wasn't fully revoked, or a future accidental repo-visibility change to public) can retrieve it.
 
-### The `.gitignore` fix
+The important problem is **Git history**.
+
+Suppose:
+
+### Commit 1
+
+```text
+terraform.tfstate
 ```
+
+contains:
+
+```text
+password = "Secret123"
+```
+
+### Commit 2
+
+You delete:
+
+```text
+terraform.tfstate
+```
+
+Someone might think:
+
+> "It's deleted now, so we're safe."
+
+❌ No.
+
+The old commit still contains the file.
+
+```text
+Commit 1
+└── terraform.tfstate
+       │
+       │ deleted
+       ▼
+Commit 2
+└── file removed
+
+BUT
+
+Git history
+└── Commit 1 still contains it
+```
+
+
+
+---
+
+# What if the repository is private?
+
+Still treat exposed secrets seriously.
+
+If sensitive credentials have entered Git history, the safe incident-response assumption is:
+
+> **Those credentials are compromised.**
+
+Rotate/revoke the affected credentials.
+
+Deleting the file from the latest commit does not erase its historical copies.
+
+---
+
+# 8. `.gitignore` for Terraform
+
+A common `.gitignore` contains:
+
+```gitignore
 *.tfstate
 *.tfstate.*
 .terraform/
-*.tfvars          # ONLY if it contains secrets - see caveat below
+*.tfvars
 crash.log
 override.tf
 override.tf.json
 ```
-**Caveat on `.tfvars`:** ignore it *if* it contains secrets. If a project's `.tfvars` is just non-sensitive sizing (`instance_type = "t3.micro"`), committing it is fine, and often desirable for team consistency — don't blanket-ignore it out of habit if there's nothing sensitive in it.
 
-### Real-World Scenario — A Public Repo Accident
-A contractor working on a client's infrastructure accidentally sets a previously-private GitHub repository to public while reorganizing their personal account's repos, forgetting that `terraform.tfstate` had been committed to it eight months earlier (before the client's engagement even started using this codebase). Within the same day, automated GitHub-scraping bots that specifically search public repos for `tfstate` files (this is a well-known, real attack pattern) flag the exposed database credentials embedded in it. The client's incident response is: rotate every credential that ever appeared in that file's history, not just the current version — because Git history means "current version" was never actually the only exposure.
+
+
+### Important `.tfvars` caveat
+
+Don't blindly assume every `.tfvars` file must be ignored.
+
+If it contains secrets:
+
+```hcl
+db_password = "super-secret"
+```
+
+➡️ Don't commit it.
+
+But if it contains only harmless configuration:
+
+```hcl
+instance_type = "t3.micro"
+```
+
+it may be perfectly reasonable to commit it.
+
+The important rule is:
+
+> **Protect sensitive values, not simply every file with a particular extension.**
 
 ---
 
-## 5. Terraform Workspaces (an isolation mechanism, with an important caveat)
+# 9. Terraform Workspaces
 
-### What they are
+Terraform Workspaces allow you to use:
+
+> **The same Terraform configuration with different state files.**
+
+Commands:
+
 ```bash
 terraform workspace new dev
 terraform workspace new prod
+
 terraform workspace select dev
+
 terraform workspace show
 ```
-A workspace gives each named environment its **own state file**, while reusing the exact same `.tf` code:
+
+
+
+---
+
+## Simple example
+
 ```hcl
 resource "aws_instance" "web" {
-  instance_type = terraform.workspace == "prod" ? "t3.large" : "t3.micro"
-  tags = { Environment = terraform.workspace }
+  instance_type = terraform.workspace == "prod"
+    ? "t3.large"
+    : "t3.micro"
+
+  tags = {
+    Environment = terraform.workspace
+  }
 }
 ```
-Under a local backend, workspaces live at `terraform.tfstate.d/<workspace>/terraform.tfstate` — with a remote S3 backend, they're stored under a workspace-specific key prefix automatically.
+
+Now:
+
+```text
+workspace = dev
+       ↓
+t3.micro
+
+workspace = prod
+       ↓
+t3.large
+```
+
+Same `.tf` code, different workspace/state.
+
+---
+
+## Workspace mental model
 
 ```mermaid
 flowchart TD
@@ -172,23 +822,171 @@ flowchart TD
     Code --> WS_prod["workspace: prod\n-> its own state"]
 ```
 
-### The exam-relevant caveat: workspaces are NOT full environment isolation
-All workspaces of one config share the **same backend configuration and the same provider credentials** — a `dev` workspace mistake is not isolated from `prod` by IAM alone, because both are reachable by whoever can run Terraform in that directory with those credentials. There's no built-in guard against `terraform workspace select prod && terraform apply` by accident.
+So:
 
-**What if you rely on workspaces as your only dev/staging/prod isolation strategy?** A single typo (`terraform workspace select prod` instead of `dev`, easy to do when tab-completing similar names) applies a change intended for `dev` directly to `prod` — using the exact same credentials, since workspaces don't change *who* you're authenticated as. HashiCorp's own recommendation for **real** environment isolation is separate root module directories (`env/dev/`, `env/staging/`, `env/prod/`), each with its own backend config and, ideally, separate AWS accounts/credentials — full isolation, not just a naming convention on top of shared access.
+```text
+Same configuration
+       │
+       ├── dev      → State A
+       ├── staging  → State B
+       └── prod     → State C
+```
 
-### Real-World Scenario 1 — A Safe Use of Workspaces: Feature-Branch Sandboxes
-A team uses workspaces specifically for short-lived, low-stakes feature-branch sandboxes (`terraform workspace new feature-123`) that get destroyed when the branch is merged or abandoned — a genuinely good fit, since the risk of a mistake here is low and the convenience of "same code, instantly isolated state" is high.
 
-### Real-World Scenario 2 — A Dangerous Misuse of Workspaces
-A company uses `dev`/`staging`/`prod` workspaces (all sharing one AWS account and one set of credentials) as their *entire* environment isolation strategy. An engineer, intending to test a change in `dev`, forgets to switch workspaces after their last session ended in `prod` — `terraform workspace show` would have warned them, but they skip that check — and applies a destructive change directly to production. This is precisely the scenario that motivates the "separate directories + separate accounts" recommendation instead.
 
 ---
 
-## 6. Managing Resource Drift and State (Objective 6d)
+# 10. Workspaces Are NOT Complete Environment Isolation
 
-### Desired State vs. Current State, revisited with the operational workflow
-Recall from Domain 2: `terraform plan` performs a three-way comparison (config vs. last-known state vs. real infrastructure, via an automatic refresh). **Drift** is what happens when the real infrastructure diverges from state because something changed it outside Terraform — a console click, another tool, an auto-scaling event.
+This is a **very important exam concept**.
+
+A common misconception is:
+
+> "I'll create dev, staging and prod workspaces, therefore my environments are completely isolated."
+
+Not necessarily.
+
+All workspaces in that configuration share the same overall backend configuration and provider setup/credentials.
+
+So you could accidentally do:
+
+```bash
+terraform workspace select prod
+terraform apply
+```
+
+when you thought you were working on `dev`.
+
+---
+
+## Why is that dangerous?
+
+Imagine:
+
+```text
+             Same Terraform configuration
+                       │
+             ┌─────────┼─────────┐
+             ▼         ▼         ▼
+            dev     staging     prod
+             │         │         │
+             └─────────┼─────────┘
+                       │
+                Same access path
+```
+
+A workspace changes **which state** you're working with.
+
+It does not automatically give you:
+
+* a separate AWS account
+* separate IAM permissions
+* separate credentials
+* a completely separate root configuration
+
+---
+
+## Better isolation for real environments
+
+For strong environment separation, use separate root configurations such as:
+
+```text
+env/
+├── dev/
+├── staging/
+└── prod/
+```
+
+Ideally combined with separate AWS accounts/credentials where appropriate.
+
+The key exam distinction:
+
+> **Workspace = separate state, same configuration.**
+
+> **Separate root modules/directories = stronger environment separation.**
+
+
+
+---
+
+## When are workspaces useful?
+
+A good example is temporary feature environments:
+
+```bash
+terraform workspace new feature-123
+```
+
+You can use the same configuration while giving that environment its own state.
+
+This can be convenient for:
+
+* Feature branches
+* Temporary testing
+* Short-lived sandboxes
+
+But be careful about using workspaces as your **only** dev/staging/prod security boundary.
+
+---
+
+# 11. Drift — Desired State vs Current State
+
+Now we reach one of the most important concepts in Terraform.
+
+## What is drift?
+
+**Drift occurs when real infrastructure changes outside Terraform and therefore no longer matches what Terraform expects.**
+
+For example, Terraform configuration says:
+
+```hcl
+instance_class = "db.m6gd.large"
+```
+
+But someone goes into the AWS console and changes it to:
+
+```text
+db.m7gd.large
+```
+
+Now:
+
+```text
+Terraform configuration
+        │
+        ▼
+db.m6gd.large
+
+AWS reality
+        │
+        ▼
+db.m7gd.large
+```
+
+That's **drift**.
+
+Common causes:
+
+* Someone changes something manually in AWS Console
+* Another automation tool changes infrastructure
+* An external script changes resources
+* An autoscaling process changes an attribute
+
+
+
+---
+
+# 12. How Terraform Detects Drift
+
+A normal:
+
+```bash
+terraform plan
+```
+
+refreshes information from the provider and compares the configuration/state with real infrastructure.
+
+Conceptually:
 
 ```mermaid
 flowchart LR
@@ -200,186 +998,873 @@ flowchart LR
     E -->|"No"| G["Plan shows: no changes"]
 ```
 
-### Detecting and handling drift, in practice
-```bash
-terraform plan   # refreshes by default, surfaces any drift as a proposed change
-terraform refresh   # reconciles STATE ONLY with reality, without a full plan/apply
+
+
+---
+
+# 13. Very Important: What Does Terraform Do With Drift?
+
+Suppose:
+
+### Configuration
+
+```text
+m6gd
 ```
-When drift is found, you have exactly two honest choices: (1) let `apply` revert the real infrastructure back to match your `.tf` config (the "config is the source of truth" default), or (2) update your `.tf` config to match the new reality, if the manual change was actually correct and should be kept going forward. **There is no third option where Terraform silently adopts the drifted value as the new desired state without you updating the code** — this is a deliberately enforced design decision, not a limitation.
 
-Let's make this concrete with a real-world scenario.
+### State
 
-Imagine you have a Terraform configuration file named `main.tf` that deploys an RDS database. Currently, your code, your S3 state file, and the actual AWS console are all perfectly in sync on **`m6gd`**.
+```text
+m6gd
+```
+
+### AWS
+
+Someone manually changes it:
+
+```text
+m7gd
+```
+
+Now:
+
+```text
+.tf configuration → m6gd
+state              → m6gd
+AWS                → m7gd
+```
+
+You run:
+
+```bash
+terraform plan
+```
+
+Terraform detects the difference.
+
+The plan may effectively say:
+
+```diff
+~ instance_class = "db.m7gd.large" -> "db.m6gd.large"
+```
+
+Terraform is saying:
+
+> "AWS is currently different from what your configuration declares. I will change it back."
+
+---
+
+# 14. Drift Management — Two Choices
+
+Once you discover drift, you need to decide whether the manual change was:
+
+### Option 1 — Wrong/unwanted
+
+You want Terraform configuration to remain the source of truth.
+
+Run:
+
+```bash
+terraform apply
+```
+
+Terraform changes AWS back to what your configuration specifies.
+
+```text
+AWS: m7gd
+       │
+       │ terraform apply
+       ▼
+AWS: m6gd
+```
+
+---
+
+### Option 2 — The manual change was actually correct
+
+Maybe the engineer changed:
+
+```text
+m6gd → m7gd
+```
+
+because the application genuinely needs the larger database.
+
+Then update your Terraform code:
 
 ```hcl
-# main.tf
-resource "aws_db_instance" "my_db" {
-  allocated_storage = 20
-  engine            = "postgres"
-  instance_class    = "db.m6gd.large" # <--- Your local code says this
+instance_class = "db.m7gd.large"
+```
+
+Now your desired state becomes the new reality.
+
+### Important exam concept
+
+Terraform does **not** automatically decide:
+
+> "Someone changed AWS, so I'll permanently adopt that value as my desired configuration."
+
+You must update the configuration if you want to keep the change.
+
+
+
+---
+
+# 15. `terraform plan` vs `terraform apply` vs Refresh-Only
+
+This is an important area where exam questions can become tricky.
+
+Let's use:
+
+```text
+Configuration = m6gd
+State         = m6gd
+AWS           = m7gd
+```
+
+---
+
+## Scenario 1 — `terraform plan`
+
+```bash
+terraform plan
+```
+
+Terraform detects the drift and shows the proposed infrastructure change.
+
+But:
+
+> **`plan` does not apply the change.**
+
+So after the plan:
+
+```text
+.tf Code  = m6gd
+AWS       = m7gd
+State     = m6gd
+```
+
+The source specifically highlights that the S3 state is not updated merely because you ran a normal plan. 
+
+---
+
+# 16. `terraform apply`
+
+Run:
+
+```bash
+terraform apply
+```
+
+Terraform first creates/shows the plan and then, after approval, executes it.
+
+In our example:
+
+```text
+Before:
+
+Code  → m6gd
+State → m6gd
+AWS   → m7gd
+
+        terraform apply
+              │
+              ▼
+
+After:
+
+Code  → m6gd
+State → m6gd
+AWS   → m6gd
+```
+
+Terraform has reverted AWS to the configuration.
+
+
+
+---
+
+# 17. Refresh-Only
+
+Sometimes you don't want Terraform to modify infrastructure.
+
+Instead, you want:
+
+> **State to reflect what actually exists in the infrastructure.**
+
+Conceptually:
+
+```text
+AWS reality
+    │
+    ▼
+Refresh
+    │
+    ▼
+Terraform state
+```
+
+The source gives:
+
+```bash
+terraform refresh
+```
+
+and the modern equivalent:
+
+```bash
+terraform apply -refresh-only
+```
+
+The important idea is:
+
+> **Refresh-only updates state to reflect reality without intentionally changing the real infrastructure.**
+
+
+
+---
+
+## The BIG catch
+
+Suppose:
+
+```text
+Code  = m6gd
+State = m6gd
+AWS   = m7gd
+```
+
+You run:
+
+```bash
+terraform apply -refresh-only
+```
+
+Now:
+
+```text
+Code  = m6gd
+State = m7gd
+AWS   = m7gd
+```
+
+State and AWS now agree.
+
+But configuration still says:
+
+```text
+m6gd
+```
+
+Therefore the next normal:
+
+```bash
+terraform plan
+```
+
+will detect:
+
+```text
+Code  → m6gd
+State → m7gd
+```
+
+and propose changing AWS back to:
+
+```text
+m6gd
+```
+
+So if the manual change is supposed to stay, **update the Terraform configuration too**.
+
+
+
+---
+
+# 18. `terraform plan -refresh-only`
+
+There is another subtle distinction.
+
+```bash
+terraform plan -refresh-only
+```
+
+is useful when you want to **preview state changes caused by drift** without modifying infrastructure or immediately committing those state changes.
+
+Conceptually:
+
+```text
+AWS reality
+     │
+     ▼
+refresh
+     │
+     ▼
+"What would state change to?"
+     │
+     ▼
+PLAN ONLY
+```
+
+It is a preview.
+
+The source example shows that the state remains unchanged because this is still a `plan`.
+
+
+
+---
+
+# 19. The Four Commands — Extremely Important
+
+Memorize this table:
+
+| Command                         | Infrastructure                       | State                    |
+| ------------------------------- | ------------------------------------ | ------------------------ |
+| `terraform plan`                | ❌ Doesn't change it                  | ❌ Doesn't commit changes |
+| `terraform apply`               | ✅ Can change it                      | ✅ Updates state          |
+| `terraform apply -refresh-only` | ❌ Doesn't intentionally change infra | ✅ Can update state       |
+| `terraform plan -refresh-only`  | ❌ Doesn't change it                  | ❌ Preview only           |
+
+### Mental model
+
+```text
+plan
+= "What would happen?"
+
+apply
+= "Do it."
+
+apply -refresh-only
+= "Make state reflect reality, don't change infrastructure."
+
+plan -refresh-only
+= "Show me what state would change to."
+```
+
+---
+
+# 20. `removed` Blocks
+
+Another important state-management feature is the `removed` block.
+
+Suppose Terraform currently manages:
+
+```hcl
+resource "aws_instance" "legacy" {
+  ...
 }
-
 ```
 
-Then, **Scenario occurs:** An engineer logs into the AWS Web Console and manually modifies the instance type to **`db.m7gd.large`** to handle a traffic spike.
+But you want to:
 
-Here is exactly what happens on your terminal and in your S3 state bucket under each scenario.
+> Stop Terraform from managing this resource **without destroying the actual AWS instance**.
 
----
+You can use:
 
-## Scenario 1: You run `terraform plan`
-
-Terraform reads the configuration, fetches the real-world state from AWS, and compares them.
-
-### What you see on your screen:
-
-```diff
-# aws_db_instance.my_db has been changed outside of Terraform.
-# (This is the implicit refresh recognizing the console change)
-
-Note: Objects have changed outside of Terraform or its state.
-
-Terraform will perform the following actions:
-
-  # aws_db_instance.my_db will be updated in-place
-~ resource "aws_db_instance" "my_db" {
-      id             = "mydb-id"
-~     instance_class = "db.m7gd.large" -> "db.m6gd.large"
-  }
-
-Plan: 0 to add, 1 to change, 0 to destroy.
-
-```
-
-### The State:
-
-* **Local `.tf` Code:** `db.m6gd.large`
-* **AWS Reality:** `db.m7gd.large`
-* **S3 State File:** **Still `db.m6gd.large**` (S3 was not updated because `plan` is a read-only command).
-
----
-
-## Scenario 2: You run `terraform apply` (Plan + Apply)
-
-You decide to go ahead and run the apply command to enforce your configuration.
-
-### What you see on your screen:
-
-```diff
-# (First, it shows you the same plan as Scenario 1)
-~ resource "aws_db_instance" "my_db" {
-~     instance_class = "db.m7gd.large" -> "db.m6gd.large"
-  }
-
-Do you want to perform these actions?
-  Enter a value: yes
-
-aws_db_instance.my_db: Modifying... [id=mydb-id]
-aws_db_instance.my_db: Modifications complete after 2m30s
-
-Apply complete! Resources: 0 added, 1 changed, 0 destroyed.
-
-```
-
-### The State:
-
-* **AWS Reality:** **Changed back to `db.m6gd.large**` (Terraform actively overrode the manual change).
-* **S3 State File:** **Updated to `db.m6gd.large**` (reflecting the successful apply).
-* **Local `.tf` Code:** `db.m6gd.large`
-
----
-
-## Scenario 3: You run `terraform refresh`
-
-*(Or the modern equivalent: `terraform apply -refresh-only` with a `yes` approval)*
-
-You want your S3 state file to align with the new AWS reality, but you do not want to modify any AWS infrastructure.
-
-### What happens:
-
-Terraform queries AWS, sees the database is actually `db.m7gd.large`, and immediately updates the S3 state file to match it.
-
-### The State:
-
-* **AWS Reality:** `db.m7gd.large`
-* **S3 State File:** **Updated to `db.m7gd.large**`
-* **Local `.tf` Code:** **Still `db.m6gd.large**`
-
-> ⚠️ **The catch:** Because your S3 state file and AWS now agree (`db.m7gd.large`), but your `main.tf` code still says `db.m6gd.large`, your very next standard `terraform plan` will immediately try to change the AWS database back to `db.m6gd.large`.
-> To fix this, you must manually update your code in `main.tf` to `db.m7gd.large`.
-
----
-
-## Scenario 4: You run `terraform plan -refresh-only`
-
-You want to see *if* there is any drift out there, but you don't want to change any infrastructure or touch your S3 state file yet.
-
-### What you see on your screen:
-
-```diff
-# aws_db_instance.my_db has been changed outside of Terraform.
-
-Note: Objects have changed outside of Terraform or its state.
-
-This is a preview of the state changes only. No real infrastructure 
-will be created, modified, or destroyed.
-
-  # aws_db_instance.my_db will be updated in-state
-~ resource "aws_db_instance" "my_db" {
-      id             = "mydb-id"
-~     instance_class = "db.m6gd.large" -> "db.m7gd.large"
-  }
-
-Would you like to update the state file? (This plan cannot be applied)
-
-```
-
-*(Since you only ran `plan`, nothing is committed).*
-
-### The State:
-
-* **AWS Reality:** `db.m7gd.large`
-* **S3 State File:** **Still `db.m6gd.large**` (S3 was not updated because this was just a `plan` preview).
-* **Local `.tf` Code:** `db.m6gd.large`
-
-### `removed` blocks — the declarative way to stop managing a resource without destroying it
 ```hcl
 removed {
   from = aws_instance.legacy
 
   lifecycle {
-    destroy = false   # stop managing it, but do NOT delete the real resource
+    destroy = false
   }
 }
 ```
-This expresses "hand this resource off, unmanaged, going forward" as reviewable, version-controlled code — instead of a manual, undocumented `terraform state rm` someone runs once from their own laptop with no record of why.
 
-### What if drift goes undetected for a long time (e.g., refresh is disabled in CI for speed)?
-State and reality can diverge for months. The eventual `plan` that *does* refresh (perhaps run manually during an incident) can surface a large, confusing batch of "unexpected" changes all at once — several unrelated manual fixes made over time, now all proposed for reversion simultaneously, with nobody remembering the original reasoning behind each one.
 
-### Real-World Scenario 1 — An Auto-Scaling Group's Drift Is Expected, Not a Bug
-An ASG's `desired_capacity` is actively managed by a scheduled Lambda (scaling up for business hours, down overnight) — this is **expected, intentional drift** from Terraform's perspective. Using `ignore_changes = [desired_capacity]` (Domain 4c) tells Terraform to stop flagging this specific, known, intentional drift as something to revert — while still catching *unexpected* drift on every other attribute of the same resource.
-
-### Real-World Scenario 2 — A Security Group Rule Changed During an Incident, Never Reverted
-During a production incident, an engineer manually opens an additional inbound port on a security group via the console to enable emergency debugging access, intending to close it again afterward — and forgets. Weeks later, a routine `terraform plan` (refreshing by default) surfaces this as unexpected drift: "this ingress rule will be destroyed" (because it's not in the `.tf` config). This is drift detection doing exactly its job — surfacing a forgotten, unintended, and potentially insecure manual change that had gone unnoticed for weeks, giving the team a clear choice to either close it (apply the proposed revert) or formally add it to the config if it turns out to be needed after all.
 
 ---
 
-## 7. Practice Questions
+## What does this mean?
 
-### Easy
-1. What is the default backend when no `backend` block is configured?
-2. Which two AWS services together provide the classic "S3 backend with locking" pattern?
-3. True/False: a `backend "s3" {}` block can read its `bucket` value from a `variable`.
+```text
+Terraform state
+       │
+       │ remove management
+       ▼
+Resource no longer managed
 
-### Medium
-4. Explain why CLI-native Terraform Workspaces are not HashiCorp's recommended solution for hard dev/staging/prod isolation, and name the structural alternative.
-5. A team's S3 backend has no DynamoDB table configured. Describe a concrete scenario where this causes a real, damaging outcome (not just a theoretical risk).
-6. Write a `removed` block that stops Terraform from managing `aws_instance.legacy` without destroying the real instance.
+BUT
 
-### Hard
-7. A company's `terraform.tfstate` was committed to a repository that later became public. Explain precisely why deleting the file in a subsequent commit does not resolve the exposure, and what the correct incident-response action is.
-8. An ASG's `desired_capacity` is managed by an external Lambda scheduler. Design the `lifecycle` configuration that lets Terraform ignore that specific, expected drift while still catching unexpected drift (e.g., a manually-changed security group) on the same resource.
+AWS instance
+       │
+       ▼
+Still exists
+```
+
+So:
+
+```text
+removed + destroy = false
+```
+
+means:
+
+> "Terraform should stop managing this resource, but leave the real resource alone."
 
 ---
-**Next:** [09-domain7-maintain-infrastructure.md](09-domain7-maintain-infrastructure.md)
+
+## Why is this better than manually running `terraform state rm`?
+
+You could manually remove something from state with:
+
+```bash
+terraform state rm ...
+```
+
+But that's a one-time manual action.
+
+A `removed` block is:
+
+* visible in code
+* reviewable
+* version-controlled
+* understandable by teammates
+* part of the Terraform configuration/workflow
+
+So the intent is documented.
+
+
+
+---
+
+# 21. Intentional vs Unintentional Drift
+
+Not every difference between Terraform and reality is necessarily a problem.
+
+Consider an Auto Scaling Group.
+
+Terraform might define:
+
+```text
+desired_capacity = 5
+```
+
+But an external scheduler intentionally changes it:
+
+```text
+Business hours → 10
+Night → 3
+```
+
+Terraform would see those differences as drift.
+
+But this drift is **intentional**.
+
+In such a situation, you can use the lifecycle feature from Domain 4:
+
+```hcl
+lifecycle {
+  ignore_changes = [
+    desired_capacity
+  ]
+}
+```
+
+Now Terraform ignores changes to that specific attribute while still managing the rest of the resource.
+
+
+
+---
+
+# 22. Don't Ignore Everything
+
+You might see:
+
+```hcl
+lifecycle {
+  ignore_changes = all
+}
+```
+
+Be very careful with this.
+
+If you ignore everything, Terraform becomes much less useful at detecting unexpected changes.
+
+Better:
+
+```hcl
+lifecycle {
+  ignore_changes = [
+    desired_capacity
+  ]
+}
+```
+
+This says:
+
+> "I intentionally don't want Terraform to fight with the external system over this one attribute."
+
+But Terraform can still detect other changes.
+
+---
+
+# 23. Example: Security Group Drift
+
+Suppose Terraform manages:
+
+```text
+Security group
+└── Port 443 allowed
+```
+
+During an emergency, someone manually opens:
+
+```text
+Port 22
+```
+
+in the AWS console.
+
+Terraform configuration doesn't contain that rule.
+
+A later:
+
+```bash
+terraform plan
+```
+
+can detect the difference and propose removing the manually added rule.
+
+This is **useful drift detection** because the change may have been forgotten and could represent a security problem.
+
+
+
+---
+
+# 24. Complete Domain 6 Mental Model
+
+Think about Terraform state like this:
+
+```mermaid
+flowchart TD
+    A["Terraform .tf files<br/>Desired state"] --> B["Terraform"]
+
+    B --> C["Backend"]
+    C --> D["terraform.tfstate"]
+
+    B --> E["Provider"]
+    E --> F["Real Infrastructure"]
+
+    D -.->|"Last known state"| F
+
+    G["State Locking"] -.-> C
+    H["Git"] -.->|"DO NOT store state here"| D
+```
+
+### The flow
+
+```text
+.tf files
+   │
+   │ "What I want"
+   ▼
+Terraform
+   │
+   ├──────────────► Provider ─────► AWS
+   │
+   └──────────────► Backend ──────► State
+```
+
+Terraform compares:
+
+```text
+Desired configuration
+        +
+Last-known state
+        +
+Current infrastructure
+        │
+        ▼
+      PLAN
+        │
+        ▼
+Determine changes
+```
+
+---
+
+# Domain 6 — Exam Cheat Sheet
+
+## Backend
+
+| Concept                | Remember                             |
+| ---------------------- | ------------------------------------ |
+| No backend block       | **Local backend**                    |
+| Local state            | `terraform.tfstate`                  |
+| Remote state           | Stored in backend such as S3         |
+| S3 `bucket`            | Where state is stored                |
+| S3 `key`               | State object's path/name             |
+| `encrypt = true`       | Encryption at rest                   |
+| S3 versioning          | Helps recover previous state         |
+| Backend variables      | ❌ Not allowed                        |
+| Dynamic backend config | `terraform init -backend-config=...` |
+
+---
+
+## State locking
+
+```text
+State locking
+     ↓
+Prevents concurrent state modification
+```
+
+Classic AWS mental model:
+
+```text
+S3       → State storage
+DynamoDB → Classic locking mechanism
+```
+
+
+
+---
+
+## Git security
+
+```text
+terraform.tfstate
+        ↓
+Contains potentially sensitive data
+        ↓
+DO NOT commit to Git
+```
+
+If state was committed:
+
+```text
+Delete file
+    ≠
+Erase Git history
+```
+
+If secrets were exposed:
+
+```text
+Rotate/revoke credentials
+```
+
+---
+
+## Workspaces
+
+```text
+Same .tf code
+      │
+      ├── dev      → State A
+      ├── staging  → State B
+      └── prod     → State C
+```
+
+Remember:
+
+> **Workspace = separate state, NOT complete security/environment isolation.**
+
+---
+
+## Drift
+
+```text
+Terraform config ≠ Real infrastructure
+                ↓
+              Drift
+```
+
+Typical cause:
+
+```text
+Someone manually changes AWS
+```
+
+Normal:
+
+```bash
+terraform plan
+```
+
+detects the difference.
+
+---
+
+## Drift decisions
+
+If manual change is **wrong**:
+
+```text
+terraform apply
+        ↓
+Revert AWS to .tf configuration
+```
+
+If manual change is **correct**:
+
+```text
+Update .tf configuration
+```
+
+Don't simply rely on refresh to permanently make the drift your desired configuration.
+
+---
+
+# ⭐ Most Important Exam Traps
+
+### Trap 1
+
+**Q:** No backend block?
+
+**A:** Local backend.
+
+---
+
+### Trap 2
+
+**Q:** Can this work?
+
+```hcl
+backend "s3" {
+  bucket = var.bucket_name
+}
+```
+
+**A:** ❌ No. Backend configuration cannot use Terraform variables.
+
+---
+
+### Trap 3
+
+**Q:** What does the S3 `key` represent?
+
+**A:** The path/name of the state object inside the bucket.
+
+---
+
+### Trap 4
+
+**Q:** Why state locking?
+
+**A:** Prevent concurrent operations from modifying the same state simultaneously.
+
+---
+
+### Trap 5
+
+**Q:** Can Terraform state be committed to Git?
+
+**A:** ❌ No. It can contain sensitive information.
+
+---
+
+### Trap 6
+
+**Q:** If I delete `terraform.tfstate` from the latest Git commit, is the secret gone?
+
+**A:** ❌ No. It can remain in Git history.
+
+---
+
+### Trap 7
+
+**Q:** Does a Terraform workspace provide complete dev/prod isolation?
+
+**A:** ❌ No.
+
+It separates state but doesn't automatically provide separate credentials/accounts/security boundaries.
+
+---
+
+### Trap 8
+
+**Q:** Someone changes AWS manually. What is that called?
+
+**A:** **Drift.**
+
+---
+
+### Trap 9
+
+**Q:** What does normal `terraform plan` do when drift exists?
+
+**A:** Refreshes/reads current infrastructure and can show a proposed change to bring infrastructure back toward the configuration.
+
+---
+
+### Trap 10
+
+**Q:** What does `terraform apply -refresh-only` do?
+
+**A:** Updates state to reflect real infrastructure **without intentionally changing the infrastructure**.
+
+---
+
+### Trap 11
+
+**Q:** What does `terraform plan -refresh-only` do?
+
+**A:** Shows a preview of state changes only; it does not commit them.
+
+---
+
+### Trap 12
+
+**Q:** How do you stop managing a resource without destroying it?
+
+```hcl
+removed {
+  from = aws_instance.legacy
+
+  lifecycle {
+    destroy = false
+  }
+}
+```
+
+---
+
+# 🧠 Final Mental Model
+
+Remember these **10 lines** for Domain 6:
+
+```text
+1. No backend = local state.
+
+2. Local state is okay for solo work, not ideal for teams.
+
+3. Remote backend = shared state.
+
+4. S3 stores the state; classic AWS locking uses DynamoDB.
+
+5. Backend blocks CANNOT use variables.
+
+6. Never commit terraform.tfstate to Git.
+
+7. Workspaces = same code + separate state.
+
+8. Workspaces are NOT complete dev/prod isolation.
+
+9. Drift = real infrastructure differs from Terraform configuration/state.
+
+10. removed + destroy=false = stop managing resource, DON'T destroy it.
+```
+
+And the most useful command mental model:
+
+```text
+terraform plan
+        ↓
+"What will change?"
+
+terraform apply
+        ↓
+"Make the changes."
+
+terraform plan -refresh-only
+        ↓
+"What state changes would happen?"
+
+terraform apply -refresh-only
+        ↓
+"Update state to match reality,
+ but don't intentionally change infrastructure."
+```
+
